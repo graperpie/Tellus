@@ -13,11 +13,18 @@ public class SlippyMap {
 	private final int width;
 	private final int height;
 	private final Camera camera;
-	private final SlippyMapTileCache cache = new SlippyMapTileCache();
+	private final SlippyMapTileCache cache;
+	private final String attribution;
 
 	public SlippyMap(int width, int height) {
+		this(width, height, new SlippyMapTileCache(), "(c) OpenStreetMap Contributors");
+	}
+
+	public SlippyMap(int width, int height, SlippyMapTileCache cache, String attribution) {
 		this.width = width;
 		this.height = height;
+		this.cache = cache;
+		this.attribution = attribution;
 
 		int scale = Math.max(1, Minecraft.getInstance().getWindow().getGuiScale());
 		this.camera = new Camera(new SlippyMapPoint(0.0, 0.0), width * scale, height * scale);
@@ -96,6 +103,10 @@ public class SlippyMap {
 
 	public int getCameraZoom() {
 		return this.camera.getZoom();
+	}
+
+	public String getAttribution() {
+		return this.attribution;
 	}
 
 	public void shutdown() {

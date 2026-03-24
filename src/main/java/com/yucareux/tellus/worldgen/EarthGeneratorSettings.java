@@ -58,6 +58,7 @@ public record EarthGeneratorSettings(
 		int voxyChunkPregenMaxRadius,
 		int voxyChunkPregenChunksPerTick,
 		DistantHorizonsRenderMode distantHorizonsRenderMode,
+		LegacyLodVersion legacyLodVersion,
 		DemProvider demProvider
 ) {
 	public static final double DEFAULT_SPAWN_LATITUDE = 27.9881;
@@ -81,6 +82,99 @@ public record EarthGeneratorSettings(
 		worldScale = clampWorldScale(worldScale);
 		voxyChunkPregenMaxRadius = Mth.clamp(voxyChunkPregenMaxRadius, 0, MAX_VOXY_PREGEN_RADIUS);
 		voxyChunkPregenChunksPerTick = Mth.clamp(voxyChunkPregenChunksPerTick, 1, MAX_VOXY_PREGEN_CHUNKS_PER_TICK);
+	}
+
+	public EarthGeneratorSettings(
+			double worldScale,
+			double terrestrialHeightScale,
+			double oceanicHeightScale,
+			int heightOffset,
+			int seaLevel,
+			double spawnLatitude,
+			double spawnLongitude,
+			int minAltitude,
+			int maxAltitude,
+			int riverLakeShorelineBlend,
+			int oceanShorelineBlend,
+			boolean shorelineBlendCliffLimit,
+			boolean caveGeneration,
+			boolean oreDistribution,
+			boolean lavaPools,
+			boolean addStrongholds,
+			boolean addVillages,
+			boolean addMineshafts,
+			boolean addOceanMonuments,
+			boolean addWoodlandMansions,
+			boolean addDesertTemples,
+			boolean addJungleTemples,
+			boolean addPillagerOutposts,
+			boolean addRuinedPortals,
+			boolean addShipwrecks,
+			boolean addOceanRuins,
+			boolean addBuriedTreasure,
+			boolean addIgloos,
+			boolean addWitchHuts,
+			boolean addAncientCities,
+			boolean addTrialChambers,
+			boolean addTrailRuins,
+			boolean deepDark,
+			boolean geodes,
+			boolean distantHorizonsWaterResolver,
+			boolean realtimeTime,
+			boolean realtimeWeather,
+			boolean historicalSnow,
+			boolean voxyChunkPregenEnabled,
+			int voxyChunkPregenMaxRadius,
+			int voxyChunkPregenChunksPerTick,
+			DistantHorizonsRenderMode distantHorizonsRenderMode,
+			DemProvider demProvider
+	) {
+		this(
+				worldScale,
+				terrestrialHeightScale,
+				oceanicHeightScale,
+				heightOffset,
+				seaLevel,
+				spawnLatitude,
+				spawnLongitude,
+				minAltitude,
+				maxAltitude,
+				riverLakeShorelineBlend,
+				oceanShorelineBlend,
+				shorelineBlendCliffLimit,
+				caveGeneration,
+				oreDistribution,
+				lavaPools,
+				addStrongholds,
+				addVillages,
+				addMineshafts,
+				addOceanMonuments,
+				addWoodlandMansions,
+				addDesertTemples,
+				addJungleTemples,
+				addPillagerOutposts,
+				addRuinedPortals,
+				addShipwrecks,
+				addOceanRuins,
+				addBuriedTreasure,
+				addIgloos,
+				addWitchHuts,
+				addAncientCities,
+				addTrialChambers,
+				addTrailRuins,
+				deepDark,
+				geodes,
+				distantHorizonsWaterResolver,
+				realtimeTime,
+				realtimeWeather,
+				historicalSnow,
+				voxyChunkPregenEnabled,
+				voxyChunkPregenMaxRadius,
+				voxyChunkPregenChunksPerTick,
+				distantHorizonsRenderMode,
+				LegacyLodVersion.V1,
+				demProvider
+		);
 	}
 
 	public static final EarthGeneratorSettings DEFAULT = new EarthGeneratorSettings(
@@ -188,6 +282,10 @@ public record EarthGeneratorSettings(
 			DistantHorizonsRenderMode.CODEC.fieldOf("distant_horizons_render_mode")
 					.orElse(DEFAULT.distantHorizonsRenderMode());
 
+	private static final MapCodec<LegacyLodVersion> LEGACY_LOD_VERSION_CODEC =
+			LegacyLodVersion.CODEC.fieldOf("legacy_lod_version")
+					.orElse(DEFAULT.legacyLodVersion());
+
 	private static final MapCodec<DemProvider> DEM_PROVIDER_CODEC =
 			DemProvider.CODEC.fieldOf("dem_provider")
 					.orElse(DEFAULT.demProvider());
@@ -255,6 +353,7 @@ public record EarthGeneratorSettings(
 							: Optional.of(input.seaLevel());
 					builder = SEA_LEVEL_CODEC.encode(seaLevel, ops, builder);
 					builder = DISTANT_HORIZONS_RENDER_MODE_CODEC.encode(input.distantHorizonsRenderMode(), ops, builder);
+					builder = LEGACY_LOD_VERSION_CODEC.encode(input.legacyLodVersion(), ops, builder);
 					builder = DEM_PROVIDER_CODEC.encode(input.demProvider(), ops, builder);
 					builder = DISTANT_HORIZONS_WATER_RESOLVER_CODEC.encode(input.distantHorizonsWaterResolver(), ops, builder);
 					builder = REALTIME_TIME_CODEC.encode(input.realtimeTime(), ops, builder);
@@ -273,6 +372,7 @@ public record EarthGeneratorSettings(
 				public <T> Stream<T> keys(DynamicOps<T> ops) {
 					Stream<T> baseKeys = Stream.concat(BASE_CODEC.keys(ops), SEA_LEVEL_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, DISTANT_HORIZONS_RENDER_MODE_CODEC.keys(ops));
+					baseKeys = Stream.concat(baseKeys, LEGACY_LOD_VERSION_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, DEM_PROVIDER_CODEC.keys(ops));
 						baseKeys = Stream.concat(baseKeys, DISTANT_HORIZONS_WATER_RESOLVER_CODEC.keys(ops));
 						baseKeys = Stream.concat(baseKeys, REALTIME_TIME_CODEC.keys(ops));
@@ -294,6 +394,7 @@ public record EarthGeneratorSettings(
 					DataResult<Optional<Integer>> seaLevel = SEA_LEVEL_CODEC.decode(ops, input);
 					DataResult<DistantHorizonsRenderMode> distantHorizonsRenderMode =
 							DISTANT_HORIZONS_RENDER_MODE_CODEC.decode(ops, input);
+					DataResult<LegacyLodVersion> legacyLodVersion = LEGACY_LOD_VERSION_CODEC.decode(ops, input);
 					DataResult<DemProvider> demProvider = DEM_PROVIDER_CODEC.decode(ops, input);
 					DataResult<Boolean> distantHorizonsWaterResolver =
 							DISTANT_HORIZONS_WATER_RESOLVER_CODEC.decode(ops, input);
@@ -345,6 +446,7 @@ public record EarthGeneratorSettings(
 							voxyChunkPregenChunksPerTick
 					);
 					DataResult<EarthGeneratorSettings> settings = withVoxyChunksPerTick.map(SettingsBase::toSettings);
+					settings = settings.apply2(EarthGeneratorSettings::applyLegacyLodVersion, legacyLodVersion);
 					settings = settings.apply2(EarthGeneratorSettings::applyDeepDark, deepDark);
 					settings = settings.apply2(EarthGeneratorSettings::applyGeodes, geodes);
 					settings = settings.apply2(EarthGeneratorSettings::withStructureSettings, structures);
@@ -355,6 +457,7 @@ public record EarthGeneratorSettings(
 				public <T> Stream<T> keys(DynamicOps<T> ops) {
 					Stream<T> baseKeys = Stream.concat(BASE_CODEC.keys(ops), SEA_LEVEL_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, DISTANT_HORIZONS_RENDER_MODE_CODEC.keys(ops));
+					baseKeys = Stream.concat(baseKeys, LEGACY_LOD_VERSION_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, DEM_PROVIDER_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, DISTANT_HORIZONS_WATER_RESOLVER_CODEC.keys(ops));
 					baseKeys = Stream.concat(baseKeys, REALTIME_TIME_CODEC.keys(ops));
@@ -963,6 +1066,58 @@ public record EarthGeneratorSettings(
 		return settings.withVoxyChunkPregenChunksPerTick(Objects.requireNonNull(chunksPerTick, "voxyChunkPregenChunksPerTick").intValue());
 	}
 
+	private static EarthGeneratorSettings applyLegacyLodVersion(
+			EarthGeneratorSettings settings,
+			LegacyLodVersion legacyLodVersion
+	) {
+		return new EarthGeneratorSettings(
+				settings.worldScale(),
+				settings.terrestrialHeightScale(),
+				settings.oceanicHeightScale(),
+				settings.heightOffset(),
+				settings.seaLevel(),
+				settings.spawnLatitude(),
+				settings.spawnLongitude(),
+				settings.minAltitude(),
+				settings.maxAltitude(),
+				settings.riverLakeShorelineBlend(),
+				settings.oceanShorelineBlend(),
+				settings.shorelineBlendCliffLimit(),
+				settings.caveGeneration(),
+				settings.oreDistribution(),
+				settings.lavaPools(),
+				settings.addStrongholds(),
+				settings.addVillages(),
+				settings.addMineshafts(),
+				settings.addOceanMonuments(),
+				settings.addWoodlandMansions(),
+				settings.addDesertTemples(),
+				settings.addJungleTemples(),
+				settings.addPillagerOutposts(),
+				settings.addRuinedPortals(),
+				settings.addShipwrecks(),
+				settings.addOceanRuins(),
+				settings.addBuriedTreasure(),
+				settings.addIgloos(),
+				settings.addWitchHuts(),
+				settings.addAncientCities(),
+				settings.addTrialChambers(),
+				settings.addTrailRuins(),
+				settings.deepDark(),
+				settings.geodes(),
+				settings.distantHorizonsWaterResolver(),
+				settings.realtimeTime(),
+				settings.realtimeWeather(),
+				settings.historicalSnow(),
+				settings.voxyChunkPregenEnabled(),
+				settings.voxyChunkPregenMaxRadius(),
+				settings.voxyChunkPregenChunksPerTick(),
+				settings.distantHorizonsRenderMode(),
+				Objects.requireNonNull(legacyLodVersion, "legacyLodVersion"),
+				settings.demProvider()
+		);
+	}
+
 	private record StructureSettings(
 			boolean addStrongholds,
 			boolean addVillages,
@@ -1237,6 +1392,38 @@ public record EarthGeneratorSettings(
 				}
 			}
 			return FAST;
+		}
+	}
+
+	public enum LegacyLodVersion {
+		V1("v1"),
+		V2("v2");
+
+		public static final Codec<LegacyLodVersion> CODEC = Codec.STRING.xmap(
+				LegacyLodVersion::fromId,
+				LegacyLodVersion::id
+		);
+
+		private final String id;
+
+		LegacyLodVersion(String id) {
+			this.id = Objects.requireNonNull(id, "id");
+		}
+
+		public String id() {
+			return this.id;
+		}
+
+		public static LegacyLodVersion fromId(String id) {
+			if (id == null) {
+				return V1;
+			}
+			for (LegacyLodVersion version : values()) {
+				if (version.id.equalsIgnoreCase(id)) {
+					return version;
+				}
+			}
+			return V1;
 		}
 	}
 

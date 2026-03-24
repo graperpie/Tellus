@@ -521,6 +521,10 @@ public class EarthCustomizeScreen extends Screen {
 				"distant_horizons_render_mode",
 				EarthGeneratorSettings.DEFAULT.distantHorizonsRenderMode()
 		);
+		EarthGeneratorSettings.LegacyLodVersion legacyLodVersion = this.findLegacyLodVersion(
+				"legacy_lod_version",
+				EarthGeneratorSettings.DEFAULT.legacyLodVersion()
+		);
 		if (renderMode == EarthGeneratorSettings.DistantHorizonsRenderMode.ULTRA_FAST) {
 			distantHorizonsWaterResolver = false;
 		}
@@ -567,6 +571,7 @@ public class EarthCustomizeScreen extends Screen {
 				voxyChunkPregenMaxRadius,
 				voxyChunkPregenChunksPerTick,
 				renderMode,
+				legacyLodVersion,
 				demProvider
 		);
 	}
@@ -651,6 +656,7 @@ public class EarthCustomizeScreen extends Screen {
 		this.setSliderValue("voxy_chunk_pregen_max_radius", initialSettings.voxyChunkPregenMaxRadius());
 		this.setSliderValue("voxy_chunk_pregen_chunks_per_tick", initialSettings.voxyChunkPregenChunksPerTick());
 		this.setRenderModeValue("distant_horizons_render_mode", initialSettings.distantHorizonsRenderMode());
+		this.setLegacyLodVersionValue("legacy_lod_version", initialSettings.legacyLodVersion());
 	}
 
 	private void setSliderValue(String key, double value) {
@@ -691,6 +697,17 @@ public class EarthCustomizeScreen extends Screen {
 			for (SettingDefinition setting : category.getSettings()) {
 				if (setting instanceof DemProviderDefinition provider && provider.key.equals(key)) {
 					provider.value = value;
+					return;
+				}
+			}
+		}
+	}
+
+	private void setLegacyLodVersionValue(String key, EarthGeneratorSettings.LegacyLodVersion value) {
+		for (CategoryDefinition category : this.categories) {
+			for (SettingDefinition setting : category.getSettings()) {
+				if (setting instanceof LegacyLodVersionDefinition legacy && legacy.key.equals(key)) {
+					legacy.value = value;
 					return;
 				}
 			}
@@ -741,6 +758,20 @@ public class EarthCustomizeScreen extends Screen {
 			for (SettingDefinition setting : category.getSettings()) {
 				if (setting instanceof DemProviderDefinition provider && provider.key.equals(key)) {
 					return provider.value;
+				}
+			}
+		}
+		return fallback;
+	}
+
+	private EarthGeneratorSettings.LegacyLodVersion findLegacyLodVersion(
+			String key,
+			EarthGeneratorSettings.LegacyLodVersion fallback
+	) {
+		for (CategoryDefinition category : this.categories) {
+			for (SettingDefinition setting : category.getSettings()) {
+				if (setting instanceof LegacyLodVersionDefinition legacy && legacy.key.equals(key)) {
+					return legacy.value;
 				}
 			}
 		}
@@ -834,6 +865,7 @@ public class EarthCustomizeScreen extends Screen {
 		@NonNull CategoryDefinition distantHorizonsCategory = Objects.requireNonNull(
 				new CategoryDefinition("distant_horizons", List.of(
 						mode("distant_horizons_render_mode", EarthGeneratorSettings.DEFAULT.distantHorizonsRenderMode()),
+						legacyMode("legacy_lod_version", EarthGeneratorSettings.DEFAULT.legacyLodVersion()),
 						toggle("distant_horizons_water_resolver", EarthGeneratorSettings.DEFAULT.distantHorizonsWaterResolver())
 				)).hideFromRoot().parent("compatibility"),
 				"distantHorizonsCategory"
@@ -919,6 +951,13 @@ public class EarthCustomizeScreen extends Screen {
 			EarthGeneratorSettings.DistantHorizonsRenderMode defaultValue
 	) {
 		return new ModeDefinition(key, defaultValue);
+	}
+
+	private static LegacyLodVersionDefinition legacyMode(
+			String key,
+			EarthGeneratorSettings.LegacyLodVersion defaultValue
+	) {
+		return new LegacyLodVersionDefinition(key, defaultValue);
 	}
 
 	private CategoryLinkDefinition categoryLink(@NonNull CategoryDefinition targetCategory) {
@@ -1106,6 +1145,13 @@ public class EarthCustomizeScreen extends Screen {
 		return Objects.requireNonNull(
 				Component.translatable("property.tellus.dem_provider.value." + provider.id()),
 				"demProviderLabel"
+		);
+	}
+
+	private static @NonNull Component formatLegacyLodVersion(EarthGeneratorSettings.LegacyLodVersion version) {
+		return Objects.requireNonNull(
+				Component.translatable("property.tellus.legacy_lod_version.value." + version.id()),
+				"legacyLodVersionLabel"
 		);
 	}
 
@@ -2256,6 +2302,65 @@ public class EarthCustomizeScreen extends Screen {
 							onChange.run();
 						}
 				);
+			button.active = !this.locked && !this.forceDisabled && !this.unavailable;
+			return button;
+		}
+	}
+
+	private static final class LegacyLodVersionDefinition implements SettingDefinition {
+		private static final @NonNull List<EarthGeneratorSettings.LegacyLodVersion> MODES = createModes();
+
+		private final String key;
+		private EarthGeneratorSettings.LegacyLodVersion value;
+		private boolean locked;
+		private boolean forceDisabled;
+		private boolean unavailable;
+		private @Nullable Component unavailableTooltip;
+
+		private static @NonNull List<EarthGeneratorSettings.LegacyLodVersion> createModes() {
+			List<EarthGeneratorSettings.LegacyLodVersion> modes = new ArrayList<>(2);
+			modes.add(EarthGeneratorSettings.LegacyLodVersion.V1);
+			modes.add(EarthGeneratorSettings.LegacyLodVersion.V2);
+			return modes;
+		}
+
+		private LegacyLodVersionDefinition(String key, EarthGeneratorSettings.LegacyLodVersion defaultValue) {
+			this.key = key;
+			this.value = defaultValue;
+		}
+
+		private LegacyLodVersionDefinition unavailable(@NonNull Component tooltip) {
+			this.unavailable = true;
+			this.unavailableTooltip = Objects.requireNonNull(tooltip, "unavailableTooltip");
+			return this;
+		}
+
+		private LegacyLodVersionDefinition forceDisabled(boolean forceDisabled) {
+			this.forceDisabled = forceDisabled;
+			return this;
+		}
+
+		@Override
+		public AbstractWidget createWidget(Runnable onChange) {
+			Component name = settingName(this.key);
+			Component tooltip = this.unavailableTooltip != null
+					? this.unavailableTooltip
+					: (this.locked ? workInProgressTooltip(this.key) : settingTooltip(this.key));
+			CycleButton.Builder<EarthGeneratorSettings.LegacyLodVersion> builder = CycleButton.builder(
+					EarthCustomizeScreen::formatLegacyLodVersion,
+					this.value
+			).withValues(MODES).withTooltip(value -> Tooltip.create(tooltip));
+			CycleButton<EarthGeneratorSettings.LegacyLodVersion> button = builder.create(
+					0,
+					0,
+					0,
+					ENTRY_HEIGHT,
+					name,
+					(btn, value) -> {
+						this.value = value;
+						onChange.run();
+					}
+			);
 			button.active = !this.locked && !this.forceDisabled && !this.unavailable;
 			return button;
 		}

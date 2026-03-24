@@ -41,7 +41,7 @@ import org.slf4j.Logger;
 public final class TellusLodGenerator implements IDhApiWorldGenerator {
 	private static final Logger LOGGER = LogUtils.getLogger();
 	private static final int SKY_LIGHT = 15;
-	private static final int CANOPY_MAX_LIGHT = 15;
+	static final int CANOPY_MAX_LIGHT = 15;
 	private static final int CANOPY_GRID_SIZE = 8;
 	private static final int CANOPY_GRID_SCALE_MAX = 8;
 	private static final int CANOPY_DENSITY_NUM = 3;
@@ -109,12 +109,30 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 	private final IDhApiLevelWrapper levelWrapper;
 	private final EarthChunkGenerator generator;
 	private final EarthBiomeSource biomeSource;
+	private final IDhApiWorldGenerator legacyGenerator;
+	private final int legacyMinDetailLevel;
+	private final int legacyMaxDetailLevel;
 	private final ThreadLocal<@NonNull WrapperCache> wrapperCache;
 
 	public TellusLodGenerator(final IDhApiLevelWrapper levelWrapper, final EarthChunkGenerator generator) {
 		this.levelWrapper = levelWrapper;
 		this.generator = generator;
 		this.biomeSource = (EarthBiomeSource) generator.getBiomeSource();
+		if (generator.settings().distantHorizonsRenderMode() == EarthGeneratorSettings.DistantHorizonsRenderMode.FAST) {
+			if (generator.settings().legacyLodVersion() == EarthGeneratorSettings.LegacyLodVersion.V2) {
+				this.legacyGenerator = new LegacyLodGeneratorV2(levelWrapper, generator);
+				this.legacyMinDetailLevel = 0;
+				this.legacyMaxDetailLevel = 24;
+			} else {
+				this.legacyGenerator = new LegacyLodGenerator(levelWrapper, generator);
+				this.legacyMinDetailLevel = 4;
+				this.legacyMaxDetailLevel = 24;
+			}
+		} else {
+			this.legacyGenerator = null;
+			this.legacyMinDetailLevel = Integer.MAX_VALUE;
+			this.legacyMaxDetailLevel = Integer.MIN_VALUE;
+		}
 		this.wrapperCache = ThreadLocal.withInitial(() -> new WrapperCache(levelWrapper));
 	}
 
@@ -139,6 +157,23 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 			final ExecutorService worldGeneratorThreadPool,
 			final Consumer<IDhApiFullDataSource> resultConsumer
 	) {
+		if (generator.settings().distantHorizonsRenderMode() == EarthGeneratorSettings.DistantHorizonsRenderMode.FAST
+				&& detailLevel >= legacyMinDetailLevel
+				&& detailLevel <= legacyMaxDetailLevel
+				&& legacyGenerator != null) {
+			return legacyGenerator.generateLod(
+					chunkPosMinX,
+					chunkPosMinZ,
+					lodPosX,
+					lodPosZ,
+					detailLevel,
+					pooledFullDataSource,
+					generatorMode,
+					worldGeneratorThreadPool,
+					resultConsumer
+			);
+		}
+
 		prefetchLodResources(chunkPosMinX, chunkPosMinZ, detailLevel, pooledFullDataSource.getWidthInDataColumns());
 		return CompletableFuture.runAsync(() -> {
 			buildLod(pooledFullDataSource, chunkPosMinX, chunkPosMinZ, detailLevel);
@@ -814,8 +849,12 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 		return (int) Math.round(min + (max - min) * t);
 	}
 
-	private static CanopyProfile canopyProfile(final Holder<Biome> biome) {
+	static CanopyProfile getCanopyProfile(final Holder<Biome> biome) {
 		return CANOPY_PROFILES.computeIfAbsent(biome, TellusLodGenerator::buildCanopyProfile);
+	}
+
+	private static CanopyProfile canopyProfile(final Holder<Biome> biome) {
+		return getCanopyProfile(biome);
 	}
 
 	private static CanopyProfile resolveTreeCoverCanopyProfile(
@@ -976,7 +1015,7 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 		);
 	}
 
-	private static CanopyColumn resolveCanopyColumn(
+	static CanopyColumn resolveCanopyColumn(
 			final CanopyProfile profile,
 			final int worldX,
 			final int worldZ,
@@ -1353,7 +1392,7 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 		return roll < threshold;
 	}
 
-	private record CanopyProfile(
+	record CanopyProfile(
 			boolean isMangrove,
 			boolean isDarkForest,
 			boolean isBambooJungle,
@@ -1388,14 +1427,14 @@ public final class TellusLodGenerator implements IDhApiWorldGenerator {
 		}
 	}
 
-	private static final class CanopyColumn {
-		private final int trunkHeight;
-		private final int leafLift;
-		private final int leavesHeight;
-		private final BlockState leavesBlock;
-		private final BlockState trunkBlock;
+	static final class CanopyColumn {
+		final int trunkHeight;
+		final int leafLift;
+		final int leavesHeight;
+		final BlockState leavesBlock;
+		final BlockState trunkBlock;
 
-		private CanopyColumn(
+		CanopyColumn(
 				final int trunkHeight,
 				final int leafLift,
 				final int leavesHeight,

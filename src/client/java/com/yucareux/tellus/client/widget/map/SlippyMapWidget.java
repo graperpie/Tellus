@@ -17,8 +17,6 @@ import net.minecraft.util.Mth;
 import org.jspecify.annotations.NonNull;
 
 public class SlippyMapWidget extends AbstractWidget {
-	private static final String ATTRIBUTION = "(c) OpenStreetMap Contributors";
-
 	private final SlippyMap map;
 	private final List<MapComponent> components = new ArrayList<>();
 
@@ -27,8 +25,12 @@ public class SlippyMapWidget extends AbstractWidget {
 	private int attributionBottomPadding;
 
 	public SlippyMapWidget(int x, int y, int width, int height) {
+		this(x, y, width, height, new SlippyMap(width, height));
+	}
+
+	public SlippyMapWidget(int x, int y, int width, int height, SlippyMap map) {
 		super(x, y, width, height, Component.empty());
-		this.map = new SlippyMap(width, height);
+		this.map = map;
 	}
 
 	public SlippyMap getMap() {
@@ -76,11 +78,12 @@ public class SlippyMapWidget extends AbstractWidget {
 
 		int maxX = this.getX() + this.width - 4;
 		int maxY = this.getY() + this.height - 4 - this.attributionBottomPadding;
-		int attributionWidth = Minecraft.getInstance().font.width(ATTRIBUTION) + 20;
+		String attribution = this.map.getAttribution();
+		int attributionWidth = Minecraft.getInstance().font.width(attribution) + 20;
 		int attributionOriginX = maxX - attributionWidth;
 		int attributionOriginY = maxY - Minecraft.getInstance().font.lineHeight - 4;
 		graphics.fill(attributionOriginX, attributionOriginY, maxX, maxY, 0xC0101010);
-		graphics.drawString(Minecraft.getInstance().font, ATTRIBUTION, attributionOriginX + 10, attributionOriginY + 2,
+		graphics.drawString(Minecraft.getInstance().font, attribution, attributionOriginX + 10, attributionOriginY + 2,
 				0xFFFFFFFF);
 
 	}

@@ -26,6 +26,8 @@ import org.jspecify.annotations.NonNull;
 
 public class SlippyMapTileCache {
 	private static final int CACHE_SIZE = 1024;
+	private static final String DEFAULT_CACHE_NAMESPACE = "map";
+	private static final String DEFAULT_TEMPLATE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 	private final ExecutorService loadingService = Executors.newFixedThreadPool(4, new ThreadFactoryBuilder()
 			.setDaemon(true)
@@ -34,10 +36,19 @@ public class SlippyMapTileCache {
 
 	private final Queue<InputStream> loadingStreams = new LinkedBlockingQueue<>();
 	private final Path cacheRoot;
+	private final String urlTemplate;
 	private final LoadingCache<SlippyMapTilePos, SlippyMapTile> tileCache;
 
 	public SlippyMapTileCache() {
-		this.cacheRoot = Minecraft.getInstance().gameDirectory.toPath().resolve("tellus/cache/map");
+		this(DEFAULT_CACHE_NAMESPACE, DEFAULT_TEMPLATE);
+	}
+
+	public SlippyMapTileCache(String cacheNamespace, String urlTemplate) {
+		String resolvedNamespace = (cacheNamespace == null || cacheNamespace.isBlank())
+				? DEFAULT_CACHE_NAMESPACE
+				: cacheNamespace;
+		this.cacheRoot = Minecraft.getInstance().gameDirectory.toPath().resolve("tellus/cache/" + resolvedNamespace);
+		this.urlTemplate = (urlTemplate == null || urlTemplate.isBlank()) ? DEFAULT_TEMPLATE : urlTemplate;
 		this.tileCache = CacheBuilder.newBuilder()
 				.maximumSize(CACHE_SIZE)
 				.removalListener(notification -> {
@@ -102,10 +113,13 @@ public class SlippyMapTileCache {
 			return new BufferedInputStream(Files.newInputStream(cachePath));
 		}
 
-		URI uri = URI.create(
-				String.format("https://tile.openstreetmap.org/%s/%s/%s.png", pos.getZoom(), pos.getX(), pos.getY()));
-		URL url = uri.toURL();
-		HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+		String url = this.urlTemplate
+				.replace("{z}", Integer.toString(pos.getZoom()))
+				.replace("{x}", Integer.toString(pos.getX()))
+				.replace("{y}", Integer.toString(pos.getY()));
+		URI uri = URI.create(url);
+		URL tileUrl = uri.toURL();
+		HttpURLConnection connection = (HttpURLConnection) tileUrl.openConnection();
 		connection.setConnectTimeout(5000);
 		connection.setReadTimeout(5000);
 		connection.setRequestProperty("User-Agent", "Tellus/2.0.0 (Minecraft Mod)");
