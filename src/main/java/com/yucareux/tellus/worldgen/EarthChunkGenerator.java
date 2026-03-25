@@ -35,8 +35,10 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.tags.TagKey;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
+import net.minecraft.util.random.WeightedList;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.Level;
@@ -46,6 +48,7 @@ import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.biome.BiomeGenerationSettings;
+import net.minecraft.world.level.biome.MobSpawnSettings;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.tags.BiomeTags;
@@ -415,6 +418,23 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 
 	@Override
 	public void spawnOriginalMobs(@NonNull WorldGenRegion level) {
+	}
+
+	@Override
+	public @NonNull WeightedList<MobSpawnSettings.SpawnerData> getMobsAt(
+			@NonNull Holder<Biome> biome,
+			@NonNull StructureManager structureManager,
+			@NonNull MobCategory mobCategory,
+			@NonNull BlockPos pos
+	) {
+		Holder<Biome> spawnBiome = biome;
+		if (this.biomeSource instanceof EarthBiomeSource earthBiomeSource) {
+			spawnBiome = earthBiomeSource.getBiomeAtBlock(pos.getX(), pos.getZ());
+		}
+		return Objects.requireNonNull(
+				super.getMobsAt(spawnBiome, structureManager, mobCategory, pos),
+				"spawnList"
+		);
 	}
 
 	@Override

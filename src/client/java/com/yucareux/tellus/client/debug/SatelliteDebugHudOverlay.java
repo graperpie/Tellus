@@ -1,44 +1,46 @@
 package com.yucareux.tellus.client.debug;
 
 import com.yucareux.tellus.Tellus;
+import com.yucareux.tellus.client.widget.map.SlippyMap;
+import com.yucareux.tellus.client.widget.map.SlippyMapPoint;
+import com.yucareux.tellus.client.widget.map.SlippyMapTile;
+import com.yucareux.tellus.client.widget.map.SlippyMapTileCache;
+import com.yucareux.tellus.client.widget.map.SlippyMapTilePos;
 import com.yucareux.tellus.legacy.backend.projection.Projection;
 import com.yucareux.tellus.legacy.backend.projection.cylindrical.Equirectangular;
-import com.yucareux.tellus.world.data.satellite.SatelliteTileSampler;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
-import java.net.http.HttpClient;
-import java.nio.file.Path;
-import java.time.Duration;
+import com.mojang.blaze3d.platform.InputConstants;
+import java.util.Comparator;
+import java.util.List;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.resources.language.I18n;
+import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.chunk.ChunkGenerator;
-import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
 
 public final class SatelliteDebugHudOverlay {
-	private static final int MAP_SIZE = 128;
-	private static final int GRID = 32;
+	private static final int MAP_SIZE = 192;
 	private static final int MAP_PADDING = 10;
-	private static final int SAMPLE_RADIUS_BLOCKS = 768;
-	private static final int ZOOM_LEVEL = 15;
+	private static final int MINIMAP_ZOOM = 16;
+	private static final String SATELLITE_ATTRIBUTION = "Tiles © Esri, Maxar, Earthstar Geographics";
+	private static final String SATELLITE_CACHE_NAMESPACE = "satellite_esri_v2";
+	private static final String SATELLITE_TEMPLATE =
+			"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 	private static final int BG_COLOR = 0xB0101010;
-	private static final int LOADING_COLOR = 0x50000000;
 
-	private final SatelliteTileSampler sampler;
+	private final SlippyMap map;
 	private boolean enabled;
 	private boolean toggleKeyDown;
 
 	private SatelliteDebugHudOverlay(final Minecraft client) {
-		final HttpClient httpClient = HttpClient.newBuilder()
-				.followRedirects(HttpClient.Redirect.NORMAL)
-				.connectTimeout(Duration.ofSeconds(5))
-				.build();
-		final Path cachePath = client.gameDirectory.toPath().resolve("tellus/cache/satellite_debug");
-		this.sampler = new SatelliteTileSampler(httpClient, cachePath);
+		final SlippyMapTileCache cache = new SlippyMapTileCache(SATELLITE_CACHE_NAMESPACE, SATELLITE_TEMPLATE);
+		this.map = new SlippyMap(MAP_SIZE, MAP_SIZE, cache, SATELLITE_ATTRIBUTION);
 	}
 
 	public static void register(final Minecraft client) {
@@ -69,42 +71,81 @@ public final class SatelliteDebugHudOverlay {
 
 		final double worldScale = resolveWorldScale(client);
 		final Projection projection = new Equirectangular(worldScale);
+		final SlippyMapPoint playerPoint = new SlippyMapPoint(
+				projection.lat(client.player.getX(), client.player.getZ()),
+				projection.lon(client.player.getX(), client.player.getZ()));
+		this.map.focus(playerPoint.getLatitude(), playerPoint.getLongitude(), MINIMAP_ZOOM);
+
 		final int startX = client.getWindow().getGuiScaledWidth() - MAP_SIZE - MAP_PADDING;
 		final int startY = MAP_PADDING;
-		final int cell = MAP_SIZE / GRID;
-		final double playerX = client.player.getX();
-		final double playerZ = client.player.getZ();
 
 		context.fill(startX - 1, startY - 1, startX + MAP_SIZE + 1, startY + MAP_SIZE + 1, 0xC0000000);
 		context.fill(startX, startY, startX + MAP_SIZE, startY + MAP_SIZE, BG_COLOR);
+		context.enableScissor(startX, startY, startX + MAP_SIZE, startY + MAP_SIZE);
 
-		for (int gz = 0; gz < GRID; gz++) {
-			for (int gx = 0; gx < GRID; gx++) {
-				final double localX = ((gx + 0.5D) / GRID) * 2.0D - 1.0D;
-				final double localZ = ((gz + 0.5D) / GRID) * 2.0D - 1.0D;
-				final double worldX = playerX + localX * SAMPLE_RADIUS_BLOCKS;
-				final double worldZ = playerZ + localZ * SAMPLE_RADIUS_BLOCKS;
-				final double lat = projection.lat(worldX, worldZ);
-				final double lon = projection.lon(worldX, worldZ);
-				final int rgb = sampler.sampleRgbNonBlocking(lat, lon, ZOOM_LEVEL);
-				final int color = rgb < 0 ? LOADING_COLOR : 0xB0000000 | rgb;
-				final int px0 = startX + gx * cell;
-				final int py0 = startY + gz * cell;
-				context.fill(px0, py0, px0 + cell, py0 + cell, color);
-			}
+		final int cameraX = this.map.getCameraX();
+		final int cameraY = this.map.getCameraY();
+		final int cameraZoom = this.map.getCameraZoom();
+		final List<SlippyMapTilePos> visibleTiles = this.map.getVisibleTiles();
+		final List<SlippyMapTilePos> cascadedTiles = this.map.cascadeTiles(visibleTiles);
+		cascadedTiles.sort(Comparator.comparingInt(SlippyMapTilePos::getZoom));
+
+		for (final SlippyMapTilePos pos : cascadedTiles) {
+			final SlippyMapTile tile = this.map.getTile(pos);
+			renderTile(context, startX, startY, cameraX, cameraY, cameraZoom, pos, tile, deltaTracker.getGameTimeDeltaPartialTick(false));
 		}
+
+		context.disableScissor();
 
 		final int cx = startX + (MAP_SIZE / 2);
 		final int cy = startY + (MAP_SIZE / 2);
 		context.fill(cx - 1, startY, cx + 1, startY + MAP_SIZE, 0x80FFFFFF);
 		context.fill(startX, cy - 1, startX + MAP_SIZE, cy + 1, 0x80FFFFFF);
 
-		context.drawString(
-				client.font,
-				I18n.get("property.tellus.legacy_lod_version.v2") + " satellite debug",
-				startX,
-				startY + MAP_SIZE + 4,
-				0xFFFFFF);
+		final String footer = "F8 overlay | M fullscreen";
+		context.drawString(client.font, footer, startX, startY + MAP_SIZE + 4, 0xFFFFFF);
+	}
+
+	private static void renderTile(
+			final GuiGraphics graphics,
+			final int originX,
+			final int originY,
+			final int cameraX,
+			final int cameraY,
+			final int cameraZoom,
+			final SlippyMapTilePos pos,
+			final SlippyMapTile image,
+			final float delta) {
+		image.update(delta);
+		final Identifier location = image.getLocation();
+		if (location == null) {
+			return;
+		}
+
+		final int deltaZoom = cameraZoom - pos.getZoom();
+		final double zoomScale = Math.pow(2.0D, deltaZoom);
+		final int size = Mth.floor(SlippyMap.TILE_SIZE * zoomScale);
+		final int renderX = (pos.getX() << deltaZoom) * SlippyMap.TILE_SIZE - cameraX;
+		final int renderY = (pos.getY() << deltaZoom) * SlippyMap.TILE_SIZE - cameraY;
+		final int textureSize = Math.max(SlippyMap.TILE_SIZE, size);
+
+		graphics.pose().pushMatrix();
+		graphics.pose().translate((float) originX, (float) originY);
+		final int scaleFactor = Math.max(1, Minecraft.getInstance().getWindow().getGuiScale());
+		final float scale = 1.0F / scaleFactor;
+		graphics.pose().scale(scale, scale);
+		graphics.blit(
+				RenderPipelines.GUI_TEXTURED,
+				location,
+				renderX,
+				renderY,
+				0.0F,
+				0.0F,
+				size,
+				size,
+				textureSize,
+				textureSize);
+		graphics.pose().popMatrix();
 	}
 
 	private static double resolveWorldScale(final Minecraft client) {

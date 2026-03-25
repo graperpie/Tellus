@@ -3,12 +3,14 @@ package com.yucareux.tellus.client.widget.map;
 import net.minecraft.util.Mth;
 
 public class SlippyMapPoint {
+	private static final double MAX_WEB_MERCATOR_LAT = 85.05112878D;
+
 	private final double latitude;
 	private final double longitude;
 
 	public SlippyMapPoint(double latitude, double longitude) {
-		this.latitude = latitude;
-		this.longitude = longitude;
+		this.latitude = Mth.clamp(latitude, -MAX_WEB_MERCATOR_LAT, MAX_WEB_MERCATOR_LAT);
+		this.longitude = wrapLongitude(longitude);
 	}
 
 	public SlippyMapPoint(int x, int y, int zoom) {
@@ -42,5 +44,16 @@ public class SlippyMapPoint {
 		int currentX = this.getX(zoom);
 		int currentY = this.getY(zoom);
 		return new SlippyMapPoint(currentX + x, currentY + y, zoom);
+	}
+
+	private static double wrapLongitude(double longitude) {
+		double wrapped = longitude;
+		while (wrapped < -180.0D) {
+			wrapped += 360.0D;
+		}
+		while (wrapped >= 180.0D) {
+			wrapped -= 360.0D;
+		}
+		return wrapped;
 	}
 }

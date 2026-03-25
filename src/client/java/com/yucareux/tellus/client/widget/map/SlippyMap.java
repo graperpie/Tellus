@@ -8,7 +8,7 @@ import net.minecraft.util.Mth;
 public class SlippyMap {
 	public static final int TILE_SIZE = 256;
 	public static final int MIN_ZOOM = 3;
-	public static final int MAX_ZOOM = 15;
+	public static final int MAX_ZOOM = 19;
 
 	private final int width;
 	private final int height;

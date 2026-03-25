@@ -9,6 +9,7 @@ import com.seibel.distanthorizons.api.interfaces.override.worldGenerator.IDhApiW
 import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
 import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
 import com.seibel.distanthorizons.api.objects.data.IDhApiFullDataSource;
+import com.yucareux.tellus.Tellus;
 import com.yucareux.tellus.legacy.backend.GeoChunk;
 import com.yucareux.tellus.legacy.backend.GeoView;
 import com.yucareux.tellus.legacy.backend.earth.EarthAttachments;
@@ -40,6 +41,8 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import net.minecraft.core.Holder;
 import net.minecraft.core.SectionPos;
@@ -50,6 +53,16 @@ import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
 public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
+	private static final int PROFILE_LOG_EVERY_CHUNKS = 32;
+	private static final AtomicInteger PROFILE_CHUNK_COUNT = new AtomicInteger();
+	private static final AtomicLong PROFILE_TOTAL_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_PREFETCH_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_BIOME_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_ELEVATION_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_SATELLITE_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_PREFETCH_SAMPLES = new AtomicLong();
+	private static final AtomicLong PROFILE_BIOME_SAMPLES = new AtomicLong();
+
 	private final LegacyLodGenerator v1Fallback;
 	private final IDhApiLevelWrapper levelWrapper;
 	private final EarthLayers earthLayers;
@@ -135,6 +148,12 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 			final int x0,
 			final int z0,
 			final byte detailLevel) {
+		final long chunkStartNs = System.nanoTime();
+		long biomeNs = 0L;
+		long elevationNs = 0L;
+		long satelliteNs = 0L;
+		long prefetchNs = 0L;
+
 		final WrapperCache wrappers = wrapperCache.get();
 		final int minY = levelWrapper.getMinHeight();
 		final int maxY = minY + levelWrapper.getMaxHeight();
@@ -151,23 +170,64 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		final int seaLevel = settings.resolveSeaLevel();
 		final float heightScale = (float) (settings.terrestrialHeightScale() / projection.idealMetersPerBlock());
 		final IDhApiBiomeWrapper defaultBiomeWrapper = wrappers.getBiome("minecraft:plains");
+		final int lodBlockSpan = 1 << Math.max(0, detailLevel);
+		final int halfSpan = Math.max(1, lodBlockSpan >> 1);
+		final int satelliteStrideColumns = satelliteSampleStrideColumns(detailLevel);
+		final int biomeStrideColumns = biomeSampleStrideColumns(detailLevel);
+		final Map<Long, SatelliteSurface> satelliteSurfaceCache = new HashMap<>();
+		final Map<Long, BiomeSample> biomeSampleCache = new HashMap<>();
+		int biomeSamples = 0;
+
+		final long prefetchStartNs = System.nanoTime();
+		final int prefetchSamples = prefetchSatelliteTiles(
+				detailLevel,
+				x0,
+				z0,
+				elevation.width(),
+				elevation.height(),
+				lodBlockSpan,
+				halfSpan,
+				satelliteStrideColumns);
+		prefetchNs += System.nanoTime() - prefetchStartNs;
 
 		for (int z = 0; z < elevation.height(); z++) {
 			for (int x = 0; x < elevation.width(); x++) {
-				final int worldX = x0 + (x << detailLevel) + (1 << (detailLevel - 1));
-				final int worldZ = z0 + (z << detailLevel) + (1 << (detailLevel - 1));
+				final int worldX = x0 + (x * lodBlockSpan) + halfSpan;
+				final int worldZ = z0 + (z * lodBlockSpan) + halfSpan;
 
-				final Holder<Biome> biomeHolder = biomeSource.getBiomeAtBlock(worldX, worldZ);
-				final IDhApiBiomeWrapper biomeWrapper = wrappers.getBiome(biomeHolder);
+				final long biomeStartNs = System.nanoTime();
+				final int biomeCellX = x / biomeStrideColumns;
+				final int biomeCellZ = z / biomeStrideColumns;
+				final long biomeKey = (((long) biomeCellX) << 32) | (biomeCellZ & 0xFFFFFFFFL);
+				BiomeSample biomeSample = biomeSampleCache.get(biomeKey);
+				if (biomeSample == null) {
+					final int sampleColumnX = Math.min(
+							elevation.width() - 1,
+							biomeCellX * biomeStrideColumns + (biomeStrideColumns >> 1));
+					final int sampleColumnZ = Math.min(
+							elevation.height() - 1,
+							biomeCellZ * biomeStrideColumns + (biomeStrideColumns >> 1));
+					final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
+					final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
+					final Holder<Biome> sampledBiomeHolder = biomeSource.getBiomeAtBlock(sampleWorldX, sampleWorldZ);
+					biomeSample = new BiomeSample(sampledBiomeHolder, wrappers.getBiome(sampledBiomeHolder));
+					biomeSampleCache.put(biomeKey, biomeSample);
+					biomeSamples++;
+				}
+				final Holder<Biome> biomeHolder = biomeSample.holder();
+				final IDhApiBiomeWrapper biomeWrapper = biomeSample.wrapper();
+				biomeNs += System.nanoTime() - biomeStartNs;
 				lodOutput.beginColumn(x, z, biomeWrapper != null ? biomeWrapper : defaultBiomeWrapper);
 
-				final int elevationValue = elevation.getInt(x, z);
+				final long elevationStartNs = System.nanoTime();
+				final int elevationValue = Mth.floor(sampleElevationBicubic(elevation, x + 0.5D, z + 0.5D));
 				final int surfaceY = Mth.clamp(Mth.floor((elevationValue * heightScale) + settings.heightOffset()), minY,
 						maxY);
 				final LegacyCover cover = landCover.get(x, z);
 				final double lat = projection.lat(worldX, worldZ);
 				final double lon = projection.lon(worldX, worldZ);
 				final boolean aboveSnowLine = false;
+				elevationNs += System.nanoTime() - elevationStartNs;
 
 				final boolean isOcean = surfaceY < seaLevel;
 				final boolean isUplandWater = cover == LegacyCover.WATER && surfaceY >= seaLevel;
@@ -181,14 +241,79 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 					lodOutput.addLayerUpTo(floorTo, getLodUnderwaterMaterial(cover));
 					lodOutput.addLayerUpTo(waterTo, Blocks.WATER.defaultBlockState());
 				} else {
-					final SatelliteSurface satelliteSurface = classifySatelliteSurface(
-							policy,
-							lat,
-							lon,
+					final int sampleCellX = x / satelliteStrideColumns;
+					final int sampleCellZ = z / satelliteStrideColumns;
+					final double fracX = ((x % satelliteStrideColumns) + 0.5D) / satelliteStrideColumns;
+					final double fracZ = ((z % satelliteStrideColumns) + 0.5D) / satelliteStrideColumns;
+
+					final long satelliteStartNs = System.nanoTime();
+					final SatelliteSurface s00 = getOrCreateSatelliteSurfaceSample(
+							satelliteSurfaceCache,
+							sampleCellX,
+							sampleCellZ,
+							satelliteStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel,
 							biomeHolder,
-							worldX,
-							worldZ,
 							aboveSnowLine);
+					final SatelliteSurface s10 = getOrCreateSatelliteSurfaceSample(
+							satelliteSurfaceCache,
+							sampleCellX + 1,
+							sampleCellZ,
+							satelliteStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel,
+							biomeHolder,
+							aboveSnowLine);
+					final SatelliteSurface s01 = getOrCreateSatelliteSurfaceSample(
+							satelliteSurfaceCache,
+							sampleCellX,
+							sampleCellZ + 1,
+							satelliteStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel,
+							biomeHolder,
+							aboveSnowLine);
+					final SatelliteSurface s11 = getOrCreateSatelliteSurfaceSample(
+							satelliteSurfaceCache,
+							sampleCellX + 1,
+							sampleCellZ + 1,
+							satelliteStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel,
+							biomeHolder,
+							aboveSnowLine);
+
+					final SatelliteSurface satelliteSurface = blendSatelliteSurface(
+							s00,
+							s10,
+							s01,
+							s11,
+							fracX,
+							fracZ,
+							worldX,
+							worldZ);
+					satelliteNs += System.nanoTime() - satelliteStartNs;
 					BlockState surfaceMaterial = satelliteSurface.blockState();
 					if (aboveSnowLine && !satelliteSurface.forceExposeRock()) {
 						surfaceMaterial = Blocks.SNOW_BLOCK.defaultBlockState();
@@ -211,17 +336,167 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				lodOutput.endColumn();
 			}
 		}
+
+		final long totalNs = System.nanoTime() - chunkStartNs;
+		PROFILE_TOTAL_NS.addAndGet(totalNs);
+		PROFILE_PREFETCH_NS.addAndGet(prefetchNs);
+		PROFILE_BIOME_NS.addAndGet(biomeNs);
+		PROFILE_ELEVATION_NS.addAndGet(elevationNs);
+		PROFILE_SATELLITE_NS.addAndGet(satelliteNs);
+		PROFILE_PREFETCH_SAMPLES.addAndGet(prefetchSamples);
+		PROFILE_BIOME_SAMPLES.addAndGet(biomeSamples);
+		final int chunks = PROFILE_CHUNK_COUNT.incrementAndGet();
+
+		if (chunks % PROFILE_LOG_EVERY_CHUNKS == 0) {
+			final double avgTotalMs = PROFILE_TOTAL_NS.get() / 1_000_000.0D / chunks;
+			final double avgPrefetchMs = PROFILE_PREFETCH_NS.get() / 1_000_000.0D / chunks;
+			final double avgBiomeMs = PROFILE_BIOME_NS.get() / 1_000_000.0D / chunks;
+			final double avgElevationMs = PROFILE_ELEVATION_NS.get() / 1_000_000.0D / chunks;
+			final double avgSatelliteMs = PROFILE_SATELLITE_NS.get() / 1_000_000.0D / chunks;
+			final double avgPrefetchSamples = PROFILE_PREFETCH_SAMPLES.get() / (double) chunks;
+			final double avgBiomeSamples = PROFILE_BIOME_SAMPLES.get() / (double) chunks;
+			Tellus.LOGGER.info(
+					"Tellus V2 LOD profile avg ({} chunks): total={}ms prefetch={}ms biome={}ms elevation={}ms satellite={}ms prefetchSamples={} biomeSamples={}",
+					chunks,
+					String.format("%.2f", avgTotalMs),
+					String.format("%.2f", avgPrefetchMs),
+					String.format("%.2f", avgBiomeMs),
+					String.format("%.2f", avgElevationMs),
+					String.format("%.2f", avgSatelliteMs),
+					String.format("%.1f", avgPrefetchSamples),
+					String.format("%.1f", avgBiomeSamples));
+		}
+	}
+
+	private int prefetchSatelliteTiles(
+			final byte detailLevel,
+			final int x0,
+			final int z0,
+			final int width,
+			final int height,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final int strideColumns) {
+		int samples = 0;
+		for (int z = 0; z < height; z += strideColumns) {
+			for (int x = 0; x < width; x += strideColumns) {
+				final int worldX = x0 + (x * lodBlockSpan) + halfSpan;
+				final int worldZ = z0 + (z * lodBlockSpan) + halfSpan;
+				final double lat = projection.lat(worldX, worldZ);
+				final double lon = projection.lon(worldX, worldZ);
+				final int zoom = detailLevelSatelliteZoom(detailLevel, lat);
+				satelliteSampler.sampleRgbNonBlocking(lat, lon, zoom);
+				samples++;
+			}
+		}
+		return samples;
+	}
+
+	private SatelliteSurface getOrCreateSatelliteSurfaceSample(
+			final Map<Long, SatelliteSurface> satelliteSurfaceCache,
+			final int cellX,
+			final int cellZ,
+			final int strideColumns,
+			final int width,
+			final int height,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final byte detailLevel,
+			final Holder<Biome> biomeHolder,
+			final boolean aboveSnowLine) {
+		final int maxCellX = Math.max(0, (width - 1) / strideColumns);
+		final int maxCellZ = Math.max(0, (height - 1) / strideColumns);
+		final int clampedCellX = Mth.clamp(cellX, 0, maxCellX);
+		final int clampedCellZ = Mth.clamp(cellZ, 0, maxCellZ);
+		final long key = (((long) clampedCellX) << 32) | (clampedCellZ & 0xFFFFFFFFL);
+
+		return satelliteSurfaceCache.computeIfAbsent(key, ignored -> {
+			final int sampleColumnX = Math.min(width - 1, clampedCellX * strideColumns + (strideColumns >> 1));
+			final int sampleColumnZ = Math.min(height - 1, clampedCellZ * strideColumns + (strideColumns >> 1));
+			final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
+			final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
+			final double sampleLat = projection.lat(sampleWorldX, sampleWorldZ);
+			final double sampleLon = projection.lon(sampleWorldX, sampleWorldZ);
+			return classifySatelliteSurface(
+					detailLevel,
+					sampleLat,
+					sampleLon,
+					biomeHolder,
+					sampleWorldX,
+					sampleWorldZ,
+					aboveSnowLine);
+		});
+	}
+
+	private static SatelliteSurface blendSatelliteSurface(
+			final SatelliteSurface s00,
+			final SatelliteSurface s10,
+			final SatelliteSurface s01,
+			final SatelliteSurface s11,
+			final double fracX,
+			final double fracZ,
+			final int worldX,
+			final int worldZ) {
+		final double fx = Mth.clamp(fracX, 0.0D, 1.0D);
+		final double fz = Mth.clamp(fracZ, 0.0D, 1.0D);
+		final double w00 = (1.0D - fx) * (1.0D - fz);
+		final double w10 = fx * (1.0D - fz);
+		final double w01 = (1.0D - fx) * fz;
+		final double w11 = fx * fz;
+
+		final Map<BlockState, Double> weights = new HashMap<>(6);
+		weights.merge(s00.blockState(), w00, Double::sum);
+		weights.merge(s10.blockState(), w10, Double::sum);
+		weights.merge(s01.blockState(), w01, Double::sum);
+		weights.merge(s11.blockState(), w11, Double::sum);
+
+		BlockState bestState = s00.blockState();
+		double bestWeight = -1.0D;
+		for (final Map.Entry<BlockState, Double> entry : weights.entrySet()) {
+			if (entry.getValue() > bestWeight) {
+				bestWeight = entry.getValue();
+				bestState = entry.getKey();
+			}
+		}
+
+		final double jitter = hash01(worldX, worldZ);
+		if (weights.size() > 1 && bestWeight < 0.70D && jitter > bestWeight) {
+			BlockState secondState = bestState;
+			double secondWeight = -1.0D;
+			for (final Map.Entry<BlockState, Double> entry : weights.entrySet()) {
+				if (entry.getKey() != bestState && entry.getValue() > secondWeight) {
+					secondWeight = entry.getValue();
+					secondState = entry.getKey();
+				}
+			}
+			if (secondWeight > 0.0D) {
+				bestState = secondState;
+			}
+		}
+
+		final double vegetationStrength = (s00.vegetationStrength() * w00)
+				+ (s10.vegetationStrength() * w10)
+				+ (s01.vegetationStrength() * w01)
+				+ (s11.vegetationStrength() * w11);
+		final double rockWeight = (s00.forceExposeRock() ? w00 : 0.0D)
+				+ (s10.forceExposeRock() ? w10 : 0.0D)
+				+ (s01.forceExposeRock() ? w01 : 0.0D)
+				+ (s11.forceExposeRock() ? w11 : 0.0D);
+
+		return new SatelliteSurface(bestState, vegetationStrength, rockWeight >= 0.50D);
 	}
 
 	private SatelliteSurface classifySatelliteSurface(
-			final V2Policy policy,
+			final byte detailLevel,
 			final double lat,
 			final double lon,
 			final Holder<Biome> biomeHolder,
 			final int worldX,
 			final int worldZ,
 			final boolean aboveSnowLine) {
-		final int zoom = policySatelliteZoom(policy);
+		final int zoom = detailLevelSatelliteZoom(detailLevel, lat);
 		final int rgb = satelliteSampler.sampleRgb(lat, lon, zoom);
 		if (rgb < 0) {
 			return fallbackSurfaceFromBiome(biomeHolder, aboveSnowLine);
@@ -458,15 +733,100 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		return hue;
 	}
 
-	private static int policySatelliteZoom(final V2Policy policy) {
-		return switch (policy) {
-			case LEVEL_3_HIGH_RES -> 13;
-			case LEVEL_4_SENTINEL_10M -> 12;
-			case LEVEL_5_SENTINEL_10M_VEG -> 11;
-			case LEVEL_6_30M -> 10;
-			case LEVEL_7_DOWNSAMPLED -> 10;
-			case LEVEL_8_MODIS -> 9;
+	private int detailLevelSatelliteZoom(final byte detailLevel, final double latitude) {
+		final int level = Byte.toUnsignedInt(detailLevel);
+		int zoom = switch (level) {
+			case 0, 1 -> 15;
+			case 2 -> 14;
+			case 3 -> 13;
+			case 4 -> 12;
+			case 5 -> 11;
+			case 6 -> 10;
+			case 7 -> 9;
+			case 8 -> 8;
+			case 9 -> 7;
+			default -> 6;
 		};
+
+		// Keep far LOD columns close to 1:1 with imagery pixel footprint.
+		final int lodBlockSpan = 1 << Math.min(level, 24);
+		final double metersPerColumn = lodBlockSpan * projection.idealMetersPerBlock();
+		if (metersPerColumn >= 4096.0D) {
+			zoom = Math.min(zoom, 6);
+		} else if (metersPerColumn >= 2048.0D) {
+			zoom = Math.min(zoom, 7);
+		} else if (metersPerColumn >= 1024.0D) {
+			zoom = Math.min(zoom, 8);
+		}
+
+		// High latitudes compress meters-per-pixel in Web Mercator.
+		final double absLat = Math.abs(latitude);
+		if (absLat >= 70.0D) {
+			zoom -= 2;
+		} else if (absLat >= 55.0D) {
+			zoom -= 1;
+		}
+
+		return Mth.clamp(zoom, 5, 15);
+	}
+
+	private static int satelliteSampleStrideColumns(final byte detailLevel) {
+		final int level = Byte.toUnsignedInt(detailLevel);
+		return switch (level) {
+			case 0, 1, 2, 3, 4 -> 1;
+			case 5, 6 -> 2;
+			case 7 -> 4;
+			case 8 -> 6;
+			case 9 -> 8;
+			default -> 12;
+		};
+	}
+
+	private static int biomeSampleStrideColumns(final byte detailLevel) {
+		final int level = Byte.toUnsignedInt(detailLevel);
+		return switch (level) {
+			case 0, 1, 2 -> 1;
+			case 3 -> 2;
+			case 4 -> 4;
+			case 5 -> 8;
+			case 6 -> 12;
+			case 7 -> 16;
+			case 8 -> 24;
+			default -> 32;
+		};
+	}
+
+	private static double sampleElevationBicubic(final ShortRaster raster, final double x, final double z) {
+		final int baseX = Mth.floor(x);
+		final int baseZ = Mth.floor(z);
+		final double fracX = x - baseX;
+		final double fracZ = z - baseZ;
+
+		final double[] row = new double[4];
+		for (int j = -1; j <= 2; j++) {
+			final int sampleZ = Mth.clamp(baseZ + j, 0, raster.height() - 1);
+			final double p0 = raster.getInt(Mth.clamp(baseX - 1, 0, raster.width() - 1), sampleZ);
+			final double p1 = raster.getInt(Mth.clamp(baseX, 0, raster.width() - 1), sampleZ);
+			final double p2 = raster.getInt(Mth.clamp(baseX + 1, 0, raster.width() - 1), sampleZ);
+			final double p3 = raster.getInt(Mth.clamp(baseX + 2, 0, raster.width() - 1), sampleZ);
+			row[j + 1] = catmullRom(p0, p1, p2, p3, fracX);
+		}
+
+		return catmullRom(row[0], row[1], row[2], row[3], fracZ);
+	}
+
+	private static double catmullRom(
+			final double p0,
+			final double p1,
+			final double p2,
+			final double p3,
+			final double t) {
+		final double t2 = t * t;
+		final double t3 = t2 * t;
+		return 0.5D * ((2.0D * p1)
+				+ (-p0 + p2) * t
+				+ ((2.0D * p0) - (5.0D * p1) + (4.0D * p2) - p3) * t2
+				+ (-p0 + (3.0D * p1) - (3.0D * p2) + p3) * t3);
 	}
 
 	private static BlockState getLodUnderwaterMaterial(final LegacyCover cover) {
@@ -505,6 +865,9 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 	}
 
 	private record SatelliteSurface(BlockState blockState, double vegetationStrength, boolean forceExposeRock) {
+	}
+
+	private record BiomeSample(Holder<Biome> holder, @Nullable IDhApiBiomeWrapper wrapper) {
 	}
 
 	private static class VanillaSurfaceLodOutput {
@@ -626,7 +989,6 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		private final IDhApiBlockStateWrapper airBlock;
 		private final Map<BlockState, IDhApiBlockStateWrapper> blockStates = new IdentityHashMap<>();
 		private final Map<String, IDhApiBiomeWrapper> biomeCache = new HashMap<>();
-		private final Map<Holder<Biome>, IDhApiBiomeWrapper> holderBiomeCache = new HashMap<>();
 
 		private WrapperCache(final IDhApiLevelWrapper levelWrapper) {
 			this.levelWrapper = levelWrapper;
@@ -646,11 +1008,6 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		}
 
 		private IDhApiBiomeWrapper getBiome(final Holder<Biome> biome) {
-			return holderBiomeCache.computeIfAbsent(biome, this::lookupBiomeByHolder);
-		}
-
-		@Nullable
-		private IDhApiBiomeWrapper lookupBiomeByHolder(final Holder<Biome> biome) {
 			return biome.unwrapKey().map(key -> getBiome(key.identifier().toString())).orElse(null);
 		}
 
