@@ -10,6 +10,7 @@ import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
 import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
 import com.seibel.distanthorizons.api.objects.data.IDhApiFullDataSource;
 import com.yucareux.tellus.Tellus;
+import com.yucareux.tellus.integration.distant_horizons.TellusLodGenerator.CanopyColumn;
 import com.yucareux.tellus.legacy.backend.GeoChunk;
 import com.yucareux.tellus.legacy.backend.GeoView;
 import com.yucareux.tellus.legacy.backend.earth.EarthAttachments;
@@ -23,9 +24,11 @@ import com.yucareux.tellus.legacy.backend.raster.EnumRaster;
 import com.yucareux.tellus.legacy.backend.raster.RasterShape;
 import com.yucareux.tellus.legacy.backend.raster.ShortRaster;
 import com.yucareux.tellus.legacy.backend.tile.GuavaTileCache;
+import com.yucareux.tellus.world.data.overture.OvertureOverlaySampler;
+import com.yucareux.tellus.world.data.satellite.SatlasTreeCoverSampler;
 import com.yucareux.tellus.world.data.satellite.SatelliteTileSampler;
-import com.yucareux.tellus.worldgen.EarthBiomeSource;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
+import com.yucareux.tellus.worldgen.EarthCoordinateShift;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -60,25 +63,39 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 	private static final AtomicLong PROFILE_BIOME_NS = new AtomicLong();
 	private static final AtomicLong PROFILE_ELEVATION_NS = new AtomicLong();
 	private static final AtomicLong PROFILE_SATELLITE_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_NS = new AtomicLong();
+	private static final AtomicLong PROFILE_TREE_COVER_NS = new AtomicLong();
 	private static final AtomicLong PROFILE_PREFETCH_SAMPLES = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_SAMPLES = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_KNOWN_COLUMNS = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_ROAD_COLUMNS = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_BUILDING_COLUMNS = new AtomicLong();
+	private static final AtomicLong PROFILE_OVERTURE_ANY_COLUMNS = new AtomicLong();
+	private static final AtomicLong PROFILE_TREE_COVER_SAMPLES = new AtomicLong();
 	private static final AtomicLong PROFILE_BIOME_SAMPLES = new AtomicLong();
+	private static final AtomicLong PROFILE_CANOPY_COLUMNS = new AtomicLong();
+	private static final int V2_TREE_CENTER_SALT = 0x4F3A2C17;
 
 	private final LegacyLodGenerator v1Fallback;
 	private final IDhApiLevelWrapper levelWrapper;
 	private final EarthLayers earthLayers;
 	private final Projection projection;
 	private final EarthGeneratorSettings settings;
-	private final EarthBiomeSource biomeSource;
 	private final SatelliteTileSampler satelliteSampler;
+	private final SatlasTreeCoverSampler satlasTreeCoverSampler;
+	private final OvertureOverlaySampler overtureOverlaySampler;
 	private final ThreadLocal<WrapperCache> wrapperCache;
+	private final int spawnOriginOffsetX;
+	private final int spawnOriginOffsetZ;
 
 	public LegacyLodGeneratorV2(final IDhApiLevelWrapper levelWrapper, final EarthChunkGenerator generator) {
 		this.levelWrapper = levelWrapper;
 		this.v1Fallback = new LegacyLodGenerator(levelWrapper, generator);
 		this.settings = generator.settings();
 		this.projection = new Equirectangular(settings.worldScale());
-		this.biomeSource = (EarthBiomeSource) generator.getBiomeSource();
 		this.wrapperCache = ThreadLocal.withInitial(() -> new WrapperCache(levelWrapper));
+		this.spawnOriginOffsetX = EarthCoordinateShift.spawnOffsetX(this.settings);
+		this.spawnOriginOffsetZ = EarthCoordinateShift.spawnOffsetZ(this.settings);
 
 		final EarthTiles.Config config = new EarthTiles.Config(
 				HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build(),
@@ -96,6 +113,10 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		this.satelliteSampler = new SatelliteTileSampler(
 				satelliteHttp,
 				Paths.get("tellus_cache", "satellite"));
+		this.satlasTreeCoverSampler = new SatlasTreeCoverSampler(
+				satelliteHttp,
+				Paths.get("tellus_cache", "satlas_tree_cover"));
+		this.overtureOverlaySampler = new OvertureOverlaySampler();
 	}
 
 	@Override
@@ -126,9 +147,11 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 
 		final int x0 = SectionPos.sectionToBlockCoord(chunkPosMinX);
 		final int z0 = SectionPos.sectionToBlockCoord(chunkPosMinZ);
-		final int x1 = x0 + lodSizeBlocks - 1;
-		final int z1 = z0 + lodSizeBlocks - 1;
-		final GeoView blockSampleView = new GeoView(x0, z0, x1, z1);
+		final int earthX0 = x0 + this.spawnOriginOffsetX;
+		final int earthZ0 = z0 + this.spawnOriginOffsetZ;
+		final int earthX1 = earthX0 + lodSizeBlocks - 1;
+		final int earthZ1 = earthZ0 + lodSizeBlocks - 1;
+		final GeoView blockSampleView = new GeoView(earthX0, earthZ0, earthX1, earthZ1);
 
 		final RasterShape outputShape = new RasterShape(lodSizePoints, lodSizePoints);
 		return earthLayers.get(blockSampleView, outputShape).thenAcceptAsync(
@@ -152,6 +175,8 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		long biomeNs = 0L;
 		long elevationNs = 0L;
 		long satelliteNs = 0L;
+		long overtureNs = 0L;
+		long treeCoverNs = 0L;
 		long prefetchNs = 0L;
 
 		final WrapperCache wrappers = wrapperCache.get();
@@ -172,14 +197,23 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		final IDhApiBiomeWrapper defaultBiomeWrapper = wrappers.getBiome("minecraft:plains");
 		final int lodBlockSpan = 1 << Math.max(0, detailLevel);
 		final int halfSpan = Math.max(1, lodBlockSpan >> 1);
-		final int satelliteStrideColumns = satelliteSampleStrideColumns(detailLevel);
-		final int biomeStrideColumns = biomeSampleStrideColumns(detailLevel);
-		final Map<Long, SatelliteSurface> satelliteSurfaceCache = new HashMap<>();
+		final int satelliteStrideColumns = satelliteSampleStrideColumns(detailLevel, policy);
+		final int overtureStrideColumns = overtureSampleStrideColumns(detailLevel, policy);
+		final int treeCoverStrideColumns = treeCoverSampleStrideColumns(detailLevel, policy);
+		final int biomeStrideColumns = biomeSampleStrideColumns(detailLevel, policy);
+		final Map<Long, Integer> satelliteRgbCache = new HashMap<>();
+		final Map<Long, OvertureOverlaySampler.OverlaySample> overtureOverlayCache = new HashMap<>();
+		final Map<Long, Integer> satlasTreeCoverCache = new HashMap<>();
 		final Map<Long, BiomeSample> biomeSampleCache = new HashMap<>();
 		int biomeSamples = 0;
+		int canopyColumns = 0;
+		int overtureKnownColumns = 0;
+		int overtureRoadColumns = 0;
+		int overtureBuildingColumns = 0;
+		int overtureAnyColumns = 0;
 
 		final long prefetchStartNs = System.nanoTime();
-		final int prefetchSamples = prefetchSatelliteTiles(
+		final int prefetchSatelliteSamples = prefetchSatelliteTiles(
 				detailLevel,
 				x0,
 				z0,
@@ -188,6 +222,24 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				lodBlockSpan,
 				halfSpan,
 				satelliteStrideColumns);
+		final int prefetchOvertureSamples = prefetchOvertureTiles(
+				detailLevel,
+				x0,
+				z0,
+				elevation.width(),
+				elevation.height(),
+				lodBlockSpan,
+				halfSpan,
+				overtureStrideColumns);
+		final int prefetchTreeCoverSamples = prefetchSatlasTreeCoverTiles(
+				x0,
+				z0,
+				elevation.width(),
+				elevation.height(),
+				lodBlockSpan,
+				halfSpan,
+				treeCoverStrideColumns);
+		final int prefetchSamples = prefetchSatelliteSamples + prefetchOvertureSamples + prefetchTreeCoverSamples;
 		prefetchNs += System.nanoTime() - prefetchStartNs;
 
 		for (int z = 0; z < elevation.height(); z++) {
@@ -198,23 +250,22 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				final long biomeStartNs = System.nanoTime();
 				final int biomeCellX = x / biomeStrideColumns;
 				final int biomeCellZ = z / biomeStrideColumns;
-				final long biomeKey = (((long) biomeCellX) << 32) | (biomeCellZ & 0xFFFFFFFFL);
-				BiomeSample biomeSample = biomeSampleCache.get(biomeKey);
-				if (biomeSample == null) {
-					final int sampleColumnX = Math.min(
-							elevation.width() - 1,
-							biomeCellX * biomeStrideColumns + (biomeStrideColumns >> 1));
-					final int sampleColumnZ = Math.min(
-							elevation.height() - 1,
-							biomeCellZ * biomeStrideColumns + (biomeStrideColumns >> 1));
-					final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
-					final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
-					final Holder<Biome> sampledBiomeHolder = biomeSource.getBiomeAtBlock(sampleWorldX, sampleWorldZ);
-					biomeSample = new BiomeSample(sampledBiomeHolder, wrappers.getBiome(sampledBiomeHolder));
-					biomeSampleCache.put(biomeKey, biomeSample);
-					biomeSamples++;
-				}
-				final Holder<Biome> biomeHolder = biomeSample.holder();
+				final BiomeSample biomeSample = getOrCreateBiomeSample(
+						biomeSampleCache,
+						biomeCellX,
+						biomeCellZ,
+						biomeStrideColumns,
+						elevation,
+						landCover,
+						x0,
+						z0,
+						lodBlockSpan,
+						halfSpan,
+						seaLevel,
+						heightScale,
+						defaultBiomeWrapper,
+						wrappers);
+				final String biomeId = biomeSample.biomeId();
 				final IDhApiBiomeWrapper biomeWrapper = biomeSample.wrapper();
 				biomeNs += System.nanoTime() - biomeStartNs;
 				lodOutput.beginColumn(x, z, biomeWrapper != null ? biomeWrapper : defaultBiomeWrapper);
@@ -224,8 +275,6 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				final int surfaceY = Mth.clamp(Mth.floor((elevationValue * heightScale) + settings.heightOffset()), minY,
 						maxY);
 				final LegacyCover cover = landCover.get(x, z);
-				final double lat = projection.lat(worldX, worldZ);
-				final double lon = projection.lon(worldX, worldZ);
 				final boolean aboveSnowLine = false;
 				elevationNs += System.nanoTime() - elevationStartNs;
 
@@ -241,94 +290,110 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 					lodOutput.addLayerUpTo(floorTo, getLodUnderwaterMaterial(cover));
 					lodOutput.addLayerUpTo(waterTo, Blocks.WATER.defaultBlockState());
 				} else {
+					final int overtureCellX = x / overtureStrideColumns;
+					final int overtureCellZ = z / overtureStrideColumns;
+					final long overtureStartNs = System.nanoTime();
+					final OvertureOverlaySampler.OverlaySample overlaySample = getOrCreateOvertureOverlaySample(
+							overtureOverlayCache,
+							overtureCellX,
+							overtureCellZ,
+							overtureStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel);
+					overtureNs += System.nanoTime() - overtureStartNs;
+					if (overlaySample.known()) {
+						overtureKnownColumns++;
+					}
+					if (overlaySample.road()) {
+						overtureRoadColumns++;
+					}
+					if (overlaySample.building()) {
+						overtureBuildingColumns++;
+					}
+					if (overlaySample.hasAnyOverlay()) {
+						overtureAnyColumns++;
+					}
+
 					final int sampleCellX = x / satelliteStrideColumns;
 					final int sampleCellZ = z / satelliteStrideColumns;
 					final double fracX = ((x % satelliteStrideColumns) + 0.5D) / satelliteStrideColumns;
 					final double fracZ = ((z % satelliteStrideColumns) + 0.5D) / satelliteStrideColumns;
 
 					final long satelliteStartNs = System.nanoTime();
-					final SatelliteSurface s00 = getOrCreateSatelliteSurfaceSample(
-							satelliteSurfaceCache,
+					final int sampledRgb = interpolateSatelliteRgbCubic(
+							satelliteRgbCache,
 							sampleCellX,
 							sampleCellZ,
-							satelliteStrideColumns,
-							elevation.width(),
-							elevation.height(),
-							x0,
-							z0,
-							lodBlockSpan,
-							halfSpan,
-							detailLevel,
-							biomeHolder,
-							aboveSnowLine);
-					final SatelliteSurface s10 = getOrCreateSatelliteSurfaceSample(
-							satelliteSurfaceCache,
-							sampleCellX + 1,
-							sampleCellZ,
-							satelliteStrideColumns,
-							elevation.width(),
-							elevation.height(),
-							x0,
-							z0,
-							lodBlockSpan,
-							halfSpan,
-							detailLevel,
-							biomeHolder,
-							aboveSnowLine);
-					final SatelliteSurface s01 = getOrCreateSatelliteSurfaceSample(
-							satelliteSurfaceCache,
-							sampleCellX,
-							sampleCellZ + 1,
-							satelliteStrideColumns,
-							elevation.width(),
-							elevation.height(),
-							x0,
-							z0,
-							lodBlockSpan,
-							halfSpan,
-							detailLevel,
-							biomeHolder,
-							aboveSnowLine);
-					final SatelliteSurface s11 = getOrCreateSatelliteSurfaceSample(
-							satelliteSurfaceCache,
-							sampleCellX + 1,
-							sampleCellZ + 1,
-							satelliteStrideColumns,
-							elevation.width(),
-							elevation.height(),
-							x0,
-							z0,
-							lodBlockSpan,
-							halfSpan,
-							detailLevel,
-							biomeHolder,
-							aboveSnowLine);
-
-					final SatelliteSurface satelliteSurface = blendSatelliteSurface(
-							s00,
-							s10,
-							s01,
-							s11,
 							fracX,
 							fracZ,
-							worldX,
-							worldZ);
+							satelliteStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan,
+							detailLevel);
+
+					final SatelliteSurface satelliteSurface = classifySatelliteSurface(
+							sampledRgb,
+							biomeId,
+							cover,
+							aboveSnowLine);
 					satelliteNs += System.nanoTime() - satelliteStartNs;
 					BlockState surfaceMaterial = satelliteSurface.blockState();
+					if (overlaySample.road()) {
+						surfaceMaterial = Blocks.BLACK_CONCRETE.defaultBlockState();
+					} else if (overlaySample.building()) {
+						surfaceMaterial = Blocks.GRAY_CONCRETE.defaultBlockState();
+					}
 					if (aboveSnowLine && !satelliteSurface.forceExposeRock()) {
 						surfaceMaterial = Blocks.SNOW_BLOCK.defaultBlockState();
 					}
 					lodOutput.addLayerUpTo(surfaceY, surfaceMaterial);
 
-					if (policy == V2Policy.LEVEL_5_SENTINEL_10M_VEG && satelliteSurface.vegetationStrength() >= 0.20D
-							&& !aboveSnowLine) {
-						final TellusLodGenerator.CanopyColumn canopy = TellusLodGenerator.resolveCanopyColumn(
-								TellusLodGenerator.getCanopyProfile(biomeHolder),
+					final int treeSampleCellX = x / treeCoverStrideColumns;
+					final int treeSampleCellZ = z / treeCoverStrideColumns;
+					final double treeFracX = ((x % treeCoverStrideColumns) + 0.5D) / treeCoverStrideColumns;
+					final double treeFracZ = ((z % treeCoverStrideColumns) + 0.5D) / treeCoverStrideColumns;
+
+					final long treeCoverStartNs = System.nanoTime();
+					final double satlasCanopyStrength = interpolateSatlasTreeCoverStrengthBilinear(
+							satlasTreeCoverCache,
+							treeSampleCellX,
+							treeSampleCellZ,
+							treeFracX,
+							treeFracZ,
+							treeCoverStrideColumns,
+							elevation.width(),
+							elevation.height(),
+							x0,
+							z0,
+							lodBlockSpan,
+							halfSpan);
+					treeCoverNs += System.nanoTime() - treeCoverStartNs;
+
+					final double canopyStrength = resolveCanopyStrength(
+							satlasCanopyStrength,
+							satelliteSurface.vegetationStrength());
+					if (canopyStrength > 0.0D
+							&& !satelliteSurface.forceExposeRock()
+							&& !aboveSnowLine
+							&& !overlaySample.hasAnyOverlay()) {
+						final CanopyColumn canopy = resolveMinecraftStyleCanopyColumn(
+								biomeId,
 								worldX,
 								worldZ,
-								Math.max(2, 1 << Math.max(0, detailLevel - 1)));
+								lodBlockSpan,
+								canopyStrength);
 						if (canopy != null) {
 							lodOutput.addCanopy(canopy);
+							canopyColumns++;
 						}
 					}
 				}
@@ -336,6 +401,7 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				lodOutput.endColumn();
 			}
 		}
+		biomeSamples = biomeSampleCache.size();
 
 		final long totalNs = System.nanoTime() - chunkStartNs;
 		PROFILE_TOTAL_NS.addAndGet(totalNs);
@@ -343,8 +409,17 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		PROFILE_BIOME_NS.addAndGet(biomeNs);
 		PROFILE_ELEVATION_NS.addAndGet(elevationNs);
 		PROFILE_SATELLITE_NS.addAndGet(satelliteNs);
+		PROFILE_OVERTURE_NS.addAndGet(overtureNs);
+		PROFILE_TREE_COVER_NS.addAndGet(treeCoverNs);
 		PROFILE_PREFETCH_SAMPLES.addAndGet(prefetchSamples);
+		PROFILE_OVERTURE_SAMPLES.addAndGet(prefetchOvertureSamples + overtureOverlayCache.size());
+		PROFILE_OVERTURE_KNOWN_COLUMNS.addAndGet(overtureKnownColumns);
+		PROFILE_OVERTURE_ROAD_COLUMNS.addAndGet(overtureRoadColumns);
+		PROFILE_OVERTURE_BUILDING_COLUMNS.addAndGet(overtureBuildingColumns);
+		PROFILE_OVERTURE_ANY_COLUMNS.addAndGet(overtureAnyColumns);
+		PROFILE_TREE_COVER_SAMPLES.addAndGet(prefetchTreeCoverSamples + satlasTreeCoverCache.size());
 		PROFILE_BIOME_SAMPLES.addAndGet(biomeSamples);
+		PROFILE_CANOPY_COLUMNS.addAndGet(canopyColumns);
 		final int chunks = PROFILE_CHUNK_COUNT.incrementAndGet();
 
 		if (chunks % PROFILE_LOG_EVERY_CHUNKS == 0) {
@@ -353,18 +428,38 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 			final double avgBiomeMs = PROFILE_BIOME_NS.get() / 1_000_000.0D / chunks;
 			final double avgElevationMs = PROFILE_ELEVATION_NS.get() / 1_000_000.0D / chunks;
 			final double avgSatelliteMs = PROFILE_SATELLITE_NS.get() / 1_000_000.0D / chunks;
+			final double avgOvertureMs = PROFILE_OVERTURE_NS.get() / 1_000_000.0D / chunks;
+			final double avgTreeCoverMs = PROFILE_TREE_COVER_NS.get() / 1_000_000.0D / chunks;
 			final double avgPrefetchSamples = PROFILE_PREFETCH_SAMPLES.get() / (double) chunks;
+			final double avgOvertureSamples = PROFILE_OVERTURE_SAMPLES.get() / (double) chunks;
+			final double avgOvertureKnownColumns = PROFILE_OVERTURE_KNOWN_COLUMNS.get() / (double) chunks;
+			final double avgOvertureRoadColumns = PROFILE_OVERTURE_ROAD_COLUMNS.get() / (double) chunks;
+			final double avgOvertureBuildingColumns = PROFILE_OVERTURE_BUILDING_COLUMNS.get() / (double) chunks;
+			final double avgOvertureAnyColumns = PROFILE_OVERTURE_ANY_COLUMNS.get() / (double) chunks;
+			final double avgTreeCoverSamples = PROFILE_TREE_COVER_SAMPLES.get() / (double) chunks;
 			final double avgBiomeSamples = PROFILE_BIOME_SAMPLES.get() / (double) chunks;
+			final double avgCanopyColumns = PROFILE_CANOPY_COLUMNS.get() / (double) chunks;
 			Tellus.LOGGER.info(
-					"Tellus V2 LOD profile avg ({} chunks): total={}ms prefetch={}ms biome={}ms elevation={}ms satellite={}ms prefetchSamples={} biomeSamples={}",
+					"Tellus V2 LOD profile avg ({} chunks): total={}ms prefetch={}ms biome={}ms elevation={}ms satellite={}ms overture={}ms treeCover={}ms prefetchSamples={} overtureSamples={} overtureKnown={} overtureAny={} overtureRoad={} overtureBuildings={} treeCoverSamples={} canopyColumns={} biomeSamples={} biomeSamplingEnabled={} satlasCanopyEnabled={}",
 					chunks,
 					String.format("%.2f", avgTotalMs),
 					String.format("%.2f", avgPrefetchMs),
 					String.format("%.2f", avgBiomeMs),
 					String.format("%.2f", avgElevationMs),
 					String.format("%.2f", avgSatelliteMs),
+					String.format("%.2f", avgOvertureMs),
+					String.format("%.2f", avgTreeCoverMs),
 					String.format("%.1f", avgPrefetchSamples),
-					String.format("%.1f", avgBiomeSamples));
+					String.format("%.1f", avgOvertureSamples),
+					String.format("%.1f", avgOvertureKnownColumns),
+					String.format("%.1f", avgOvertureAnyColumns),
+					String.format("%.1f", avgOvertureRoadColumns),
+					String.format("%.1f", avgOvertureBuildingColumns),
+					String.format("%.1f", avgTreeCoverSamples),
+					String.format("%.1f", avgCanopyColumns),
+					String.format("%.1f", avgBiomeSamples),
+					"false",
+					"true");
 		}
 	}
 
@@ -382,8 +477,8 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 			for (int x = 0; x < width; x += strideColumns) {
 				final int worldX = x0 + (x * lodBlockSpan) + halfSpan;
 				final int worldZ = z0 + (z * lodBlockSpan) + halfSpan;
-				final double lat = projection.lat(worldX, worldZ);
-				final double lon = projection.lon(worldX, worldZ);
+				final double lat = projection.lat(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+				final double lon = projection.lon(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
 				final int zoom = detailLevelSatelliteZoom(detailLevel, lat);
 				satelliteSampler.sampleRgbNonBlocking(lat, lon, zoom);
 				samples++;
@@ -392,8 +487,82 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		return samples;
 	}
 
-	private SatelliteSurface getOrCreateSatelliteSurfaceSample(
-			final Map<Long, SatelliteSurface> satelliteSurfaceCache,
+	private int prefetchOvertureTiles(
+			final byte detailLevel,
+			final int x0,
+			final int z0,
+			final int width,
+			final int height,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final int strideColumns) {
+		int samples = 0;
+		for (int z = 0; z < height; z += strideColumns) {
+			for (int x = 0; x < width; x += strideColumns) {
+				final int worldX = x0 + (x * lodBlockSpan) + halfSpan;
+				final int worldZ = z0 + (z * lodBlockSpan) + halfSpan;
+				final double lat = projection.lat(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+				final double lon = projection.lon(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+				final int zoom = detailLevelOvertureZoom(detailLevel, lat);
+				overtureOverlaySampler.prefetchNonBlocking(lat, lon, zoom);
+				samples++;
+			}
+		}
+		return samples;
+	}
+
+	private int prefetchSatlasTreeCoverTiles(
+			final int x0,
+			final int z0,
+			final int width,
+			final int height,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final int strideColumns) {
+		int samples = 0;
+		for (int z = 0; z < height; z += strideColumns) {
+			for (int x = 0; x < width; x += strideColumns) {
+				final int worldX = x0 + (x * lodBlockSpan) + halfSpan;
+				final int worldZ = z0 + (z * lodBlockSpan) + halfSpan;
+				final double lat = projection.lat(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+				final double lon = projection.lon(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+				satlasTreeCoverSampler.sampleTreeCoverClassNonBlocking(lat, lon);
+				samples++;
+			}
+		}
+		return samples;
+	}
+
+	private int getOrCreateSatlasTreeCoverClassSample(
+			final Map<Long, Integer> satlasTreeCoverCache,
+			final int cellX,
+			final int cellZ,
+			final int strideColumns,
+			final int width,
+			final int height,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan) {
+		final int maxCellX = Math.max(0, (width - 1) / strideColumns);
+		final int maxCellZ = Math.max(0, (height - 1) / strideColumns);
+		final int clampedCellX = Mth.clamp(cellX, 0, maxCellX);
+		final int clampedCellZ = Mth.clamp(cellZ, 0, maxCellZ);
+		final long key = (((long) clampedCellX) << 32) | (clampedCellZ & 0xFFFFFFFFL);
+
+		return satlasTreeCoverCache.computeIfAbsent(key, ignored -> {
+			final int sampleColumnX = Math.min(width - 1, clampedCellX * strideColumns + (strideColumns >> 1));
+			final int sampleColumnZ = Math.min(height - 1, clampedCellZ * strideColumns + (strideColumns >> 1));
+			final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
+			final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
+			final double sampleLat = projection.lat(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+			final double sampleLon = projection.lon(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+			return satlasTreeCoverSampler.sampleTreeCoverClassNonBlocking(sampleLat, sampleLon);
+		});
+	}
+
+	private OvertureOverlaySampler.OverlaySample getOrCreateOvertureOverlaySample(
+			final Map<Long, OvertureOverlaySampler.OverlaySample> overlayCache,
 			final int cellX,
 			final int cellZ,
 			final int strideColumns,
@@ -403,103 +572,389 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 			final int z0,
 			final int lodBlockSpan,
 			final int halfSpan,
-			final byte detailLevel,
-			final Holder<Biome> biomeHolder,
-			final boolean aboveSnowLine) {
+			final byte detailLevel) {
+		final int maxCellX = Math.max(0, (width - 1) / strideColumns);
+		final int maxCellZ = Math.max(0, (height - 1) / strideColumns);
+		final int clampedCellX = Mth.clamp(cellX, 0, maxCellX);
+		final int clampedCellZ = Mth.clamp(cellZ, 0, maxCellZ);
+		final long key = (((long) clampedCellX) << 32) | (clampedCellZ & 0xFFFFFFFFL);
+		final OvertureOverlaySampler.OverlaySample cached = overlayCache.get(key);
+		if (cached != null && cached.known()) {
+			return cached;
+		}
+
+		final int sampleColumnX = Math.min(width - 1, clampedCellX * strideColumns + (strideColumns >> 1));
+		final int sampleColumnZ = Math.min(height - 1, clampedCellZ * strideColumns + (strideColumns >> 1));
+		final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
+		final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
+		final double sampleLat = projection.lat(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+		final double sampleLon = projection.lon(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+		final int zoom = detailLevelOvertureZoom(detailLevel, sampleLat);
+		final OvertureOverlaySampler.OverlaySample sampled = overtureOverlaySampler.sampleOverlayNonBlocking(sampleLat, sampleLon, zoom);
+		if (sampled.known()) {
+			overlayCache.put(key, sampled);
+		}
+		return sampled;
+	}
+
+	private double interpolateSatlasTreeCoverStrengthBilinear(
+			final Map<Long, Integer> satlasTreeCoverCache,
+			final int cellX,
+			final int cellZ,
+			final double fracX,
+			final double fracZ,
+			final int strideColumns,
+			final int width,
+			final int height,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan) {
+		final double fx = Mth.clamp(fracX, 0.0D, 1.0D);
+		final double fz = Mth.clamp(fracZ, 0.0D, 1.0D);
+
+		final int c00 = getOrCreateSatlasTreeCoverClassSample(
+				satlasTreeCoverCache,
+				cellX,
+				cellZ,
+				strideColumns,
+				width,
+				height,
+				x0,
+				z0,
+				lodBlockSpan,
+				halfSpan);
+		final int c10 = getOrCreateSatlasTreeCoverClassSample(
+				satlasTreeCoverCache,
+				cellX + 1,
+				cellZ,
+				strideColumns,
+				width,
+				height,
+				x0,
+				z0,
+				lodBlockSpan,
+				halfSpan);
+		final int c01 = getOrCreateSatlasTreeCoverClassSample(
+				satlasTreeCoverCache,
+				cellX,
+				cellZ + 1,
+				strideColumns,
+				width,
+				height,
+				x0,
+				z0,
+				lodBlockSpan,
+				halfSpan);
+		final int c11 = getOrCreateSatlasTreeCoverClassSample(
+				satlasTreeCoverCache,
+				cellX + 1,
+				cellZ + 1,
+				strideColumns,
+				width,
+				height,
+				x0,
+				z0,
+				lodBlockSpan,
+				halfSpan);
+
+		final double s00 = satlasClassToCanopyStrength(c00);
+		final double s10 = satlasClassToCanopyStrength(c10);
+		final double s01 = satlasClassToCanopyStrength(c01);
+		final double s11 = satlasClassToCanopyStrength(c11);
+
+		if (s00 < 0.0D || s10 < 0.0D || s01 < 0.0D || s11 < 0.0D) {
+			return satlasClassToCanopyStrength(c00);
+		}
+
+		final double top = s00 + (s10 - s00) * fx;
+		final double bottom = s01 + (s11 - s01) * fx;
+		return Mth.clamp(top + (bottom - top) * fz, 0.0D, 1.0D);
+	}
+
+	private BiomeSample getOrCreateBiomeSample(
+			final Map<Long, BiomeSample> biomeSampleCache,
+			final int cellX,
+			final int cellZ,
+			final int strideColumns,
+			final ShortRaster elevation,
+			final EnumRaster<LegacyCover> landCover,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final int seaLevel,
+			final float heightScale,
+			final IDhApiBiomeWrapper defaultBiomeWrapper,
+			final WrapperCache wrappers) {
+		final int maxCellX = Math.max(0, (elevation.width() - 1) / strideColumns);
+		final int maxCellZ = Math.max(0, (elevation.height() - 1) / strideColumns);
+		final int clampedCellX = Mth.clamp(cellX, 0, maxCellX);
+		final int clampedCellZ = Mth.clamp(cellZ, 0, maxCellZ);
+		final long key = (((long) clampedCellX) << 32) | (clampedCellZ & 0xFFFFFFFFL);
+
+		return biomeSampleCache.computeIfAbsent(key, ignored -> {
+			final int sampleColumnX = Math.min(
+					elevation.width() - 1,
+					clampedCellX * strideColumns + (strideColumns >> 1));
+			final int sampleColumnZ = Math.min(
+					elevation.height() - 1,
+					clampedCellZ * strideColumns + (strideColumns >> 1));
+			final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
+			final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
+			final int elevationValue = elevation.getInt(sampleColumnX, sampleColumnZ);
+			final int surfaceY = Mth.floor((elevationValue * heightScale) + settings.heightOffset());
+			final LegacyCover cover = landCover.get(sampleColumnX, sampleColumnZ);
+			final double latitude = projection.lat(
+					sampleWorldX + this.spawnOriginOffsetX,
+					sampleWorldZ + this.spawnOriginOffsetZ);
+
+			final String biomeId = classifyBiomeIdFast(cover, surfaceY, seaLevel, latitude, elevationValue);
+			final IDhApiBiomeWrapper wrapper = Optional.ofNullable(wrappers.getBiome(biomeId))
+					.orElse(defaultBiomeWrapper);
+			return new BiomeSample(biomeId, wrapper);
+		});
+	}
+
+	private static String classifyBiomeIdFast(
+			final LegacyCover cover,
+			final int surfaceY,
+			final int seaLevel,
+			final double latitude,
+			final int elevationValue) {
+		final double absLat = Math.abs(latitude);
+
+		if (cover == LegacyCover.WATER) {
+			return surfaceY < seaLevel ? "minecraft:ocean" : "minecraft:river";
+		}
+
+		if (cover == LegacyCover.PERMANENT_SNOW || (absLat > 58.0D && elevationValue > 900)) {
+			return elevationValue > 1700 ? "minecraft:frozen_peaks" : "minecraft:snowy_slopes";
+		}
+
+		if (isFloodedCover(cover)) {
+			return absLat < 30.0D ? "minecraft:mangrove_swamp" : "minecraft:swamp";
+		}
+
+		if (elevationValue > 3200) {
+			return "minecraft:jagged_peaks";
+		}
+		if (elevationValue > 2400) {
+			return "minecraft:stony_peaks";
+		}
+		if (elevationValue > 1600 && absLat > 52.0D) {
+			return "minecraft:windswept_hills";
+		}
+
+		if (isForestCover(cover)) {
+			if (absLat >= 55.0D) {
+				return "minecraft:taiga";
+			}
+			if (absLat <= 17.0D) {
+				return "minecraft:jungle";
+			}
+			if (absLat <= 28.0D) {
+				return "minecraft:savanna";
+			}
+			return "minecraft:forest";
+		}
+
+		if (isGrassOrCropCover(cover)) {
+			if (absLat <= 18.0D) {
+				return "minecraft:savanna";
+			}
+			if (absLat >= 55.0D) {
+				return "minecraft:taiga";
+			}
+			return "minecraft:plains";
+		}
+
+		if (isBareCover(cover)) {
+			if (absLat <= 23.0D) {
+				return "minecraft:desert";
+			}
+			if (absLat <= 30.0D) {
+				return "minecraft:badlands";
+			}
+			return "minecraft:plains";
+		}
+
+		return "minecraft:plains";
+	}
+
+	private static boolean isForestCover(final LegacyCover cover) {
+		return switch (cover) {
+			case TREE_OR_SHRUB_COVER,
+					BROADLEAF_EVERGREEN,
+					BROADLEAF_DECIDUOUS,
+					BROADLEAF_DECIDUOUS_CLOSED,
+					BROADLEAF_DECIDUOUS_OPEN,
+					NEEDLE_LEAF_EVERGREEN,
+					NEEDLE_LEAF_EVERGREEN_CLOSED,
+					NEEDLE_LEAF_EVERGREEN_OPEN,
+					NEEDLE_LEAF_DECIDUOUS,
+					NEEDLE_LEAF_DECIDUOUS_CLOSED,
+					NEEDLE_LEAF_DECIDUOUS_OPEN,
+					MIXED_LEAF_TYPE,
+					TREE_AND_SHRUB_WITH_HERBACEOUS_COVER,
+					HERBACEOUS_COVER_WITH_TREE_AND_SHRUB,
+					SHRUBLAND,
+					SHRUBLAND_EVERGREEN,
+					SHRUBLAND_DECIDUOUS,
+					SPARSE_TREE -> true;
+			default -> false;
+		};
+	}
+
+	private static boolean isGrassOrCropCover(final LegacyCover cover) {
+		return switch (cover) {
+			case RAINFED_CROPLAND,
+					IRRIGATED_CROPLAND,
+					CROPLAND_WITH_VEGETATION,
+					VEGETATION_WITH_CROPLAND,
+					GRASSLAND,
+					HERBACEOUS_COVER,
+					SPARSE_VEGETATION,
+					SPARSE_SHRUB,
+					SPARSE_HERBACEOUS_COVER,
+					LICHENS_AND_MOSSES -> true;
+			default -> false;
+		};
+	}
+
+	private static boolean isBareCover(final LegacyCover cover) {
+		return switch (cover) {
+			case BARE,
+					BARE_CONSOLIDATED,
+					BARE_UNCONSOLIDATED,
+					URBAN -> true;
+			default -> false;
+		};
+	}
+
+	private static boolean isFloodedCover(final LegacyCover cover) {
+		return switch (cover) {
+			case FRESH_FLOODED_FOREST,
+					SALINE_FLOODED_FOREST,
+					FLOODED_VEGETATION -> true;
+			default -> false;
+		};
+	}
+
+	private int getOrCreateSatelliteRgbSample(
+			final Map<Long, Integer> satelliteRgbCache,
+			final int cellX,
+			final int cellZ,
+			final int strideColumns,
+			final int width,
+			final int height,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final byte detailLevel) {
 		final int maxCellX = Math.max(0, (width - 1) / strideColumns);
 		final int maxCellZ = Math.max(0, (height - 1) / strideColumns);
 		final int clampedCellX = Mth.clamp(cellX, 0, maxCellX);
 		final int clampedCellZ = Mth.clamp(cellZ, 0, maxCellZ);
 		final long key = (((long) clampedCellX) << 32) | (clampedCellZ & 0xFFFFFFFFL);
 
-		return satelliteSurfaceCache.computeIfAbsent(key, ignored -> {
+		return satelliteRgbCache.computeIfAbsent(key, ignored -> {
 			final int sampleColumnX = Math.min(width - 1, clampedCellX * strideColumns + (strideColumns >> 1));
 			final int sampleColumnZ = Math.min(height - 1, clampedCellZ * strideColumns + (strideColumns >> 1));
 			final int sampleWorldX = x0 + (sampleColumnX * lodBlockSpan) + halfSpan;
 			final int sampleWorldZ = z0 + (sampleColumnZ * lodBlockSpan) + halfSpan;
-			final double sampleLat = projection.lat(sampleWorldX, sampleWorldZ);
-			final double sampleLon = projection.lon(sampleWorldX, sampleWorldZ);
-			return classifySatelliteSurface(
-					detailLevel,
-					sampleLat,
-					sampleLon,
-					biomeHolder,
-					sampleWorldX,
-					sampleWorldZ,
-					aboveSnowLine);
+			final double sampleLat = projection.lat(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+			final double sampleLon = projection.lon(sampleWorldX + this.spawnOriginOffsetX, sampleWorldZ + this.spawnOriginOffsetZ);
+			final int zoom = detailLevelSatelliteZoom(detailLevel, sampleLat);
+			return satelliteSampler.sampleRgb(sampleLat, sampleLon, zoom);
 		});
 	}
 
-	private static SatelliteSurface blendSatelliteSurface(
-			final SatelliteSurface s00,
-			final SatelliteSurface s10,
-			final SatelliteSurface s01,
-			final SatelliteSurface s11,
+	private int interpolateSatelliteRgbCubic(
+			final Map<Long, Integer> satelliteRgbCache,
+			final int cellX,
+			final int cellZ,
 			final double fracX,
 			final double fracZ,
-			final int worldX,
-			final int worldZ) {
+			final int strideColumns,
+			final int width,
+			final int height,
+			final int x0,
+			final int z0,
+			final int lodBlockSpan,
+			final int halfSpan,
+			final byte detailLevel) {
 		final double fx = Mth.clamp(fracX, 0.0D, 1.0D);
 		final double fz = Mth.clamp(fracZ, 0.0D, 1.0D);
-		final double w00 = (1.0D - fx) * (1.0D - fz);
-		final double w10 = fx * (1.0D - fz);
-		final double w01 = (1.0D - fx) * fz;
-		final double w11 = fx * fz;
-
-		final Map<BlockState, Double> weights = new HashMap<>(6);
-		weights.merge(s00.blockState(), w00, Double::sum);
-		weights.merge(s10.blockState(), w10, Double::sum);
-		weights.merge(s01.blockState(), w01, Double::sum);
-		weights.merge(s11.blockState(), w11, Double::sum);
-
-		BlockState bestState = s00.blockState();
-		double bestWeight = -1.0D;
-		for (final Map.Entry<BlockState, Double> entry : weights.entrySet()) {
-			if (entry.getValue() > bestWeight) {
-				bestWeight = entry.getValue();
-				bestState = entry.getKey();
+		final int[][] samples = new int[4][4];
+		for (int j = -1; j <= 2; j++) {
+			for (int i = -1; i <= 2; i++) {
+				samples[j + 1][i + 1] = getOrCreateSatelliteRgbSample(
+						satelliteRgbCache,
+						cellX + i,
+						cellZ + j,
+						strideColumns,
+						width,
+						height,
+						x0,
+						z0,
+						lodBlockSpan,
+						halfSpan,
+						detailLevel);
 			}
 		}
 
-		final double jitter = hash01(worldX, worldZ);
-		if (weights.size() > 1 && bestWeight < 0.70D && jitter > bestWeight) {
-			BlockState secondState = bestState;
-			double secondWeight = -1.0D;
-			for (final Map.Entry<BlockState, Double> entry : weights.entrySet()) {
-				if (entry.getKey() != bestState && entry.getValue() > secondWeight) {
-					secondWeight = entry.getValue();
-					secondState = entry.getKey();
+		final int centerRgb = samples[1][1];
+		for (int j = 0; j < 4; j++) {
+			for (int i = 0; i < 4; i++) {
+				if (samples[j][i] < 0) {
+					return centerRgb;
 				}
 			}
-			if (secondWeight > 0.0D) {
-				bestState = secondState;
-			}
 		}
 
-		final double vegetationStrength = (s00.vegetationStrength() * w00)
-				+ (s10.vegetationStrength() * w10)
-				+ (s01.vegetationStrength() * w01)
-				+ (s11.vegetationStrength() * w11);
-		final double rockWeight = (s00.forceExposeRock() ? w00 : 0.0D)
-				+ (s10.forceExposeRock() ? w10 : 0.0D)
-				+ (s01.forceExposeRock() ? w01 : 0.0D)
-				+ (s11.forceExposeRock() ? w11 : 0.0D);
+		final double[] rRow = new double[4];
+		final double[] gRow = new double[4];
+		final double[] bRow = new double[4];
+		for (int j = 0; j < 4; j++) {
+			final int rgb0 = samples[j][0];
+			final int rgb1 = samples[j][1];
+			final int rgb2 = samples[j][2];
+			final int rgb3 = samples[j][3];
+			rRow[j] = catmullRom(
+					(rgb0 >> 16) & 0xFF,
+					(rgb1 >> 16) & 0xFF,
+					(rgb2 >> 16) & 0xFF,
+					(rgb3 >> 16) & 0xFF,
+					fx);
+			gRow[j] = catmullRom(
+					(rgb0 >> 8) & 0xFF,
+					(rgb1 >> 8) & 0xFF,
+					(rgb2 >> 8) & 0xFF,
+					(rgb3 >> 8) & 0xFF,
+					fx);
+			bRow[j] = catmullRom(
+					rgb0 & 0xFF,
+					rgb1 & 0xFF,
+					rgb2 & 0xFF,
+					rgb3 & 0xFF,
+					fx);
+		}
 
-		return new SatelliteSurface(bestState, vegetationStrength, rockWeight >= 0.50D);
+		final int r = Mth.clamp(Mth.floor(catmullRom(rRow[0], rRow[1], rRow[2], rRow[3], fz) + 0.5D), 0, 255);
+		final int g = Mth.clamp(Mth.floor(catmullRom(gRow[0], gRow[1], gRow[2], gRow[3], fz) + 0.5D), 0, 255);
+		final int b = Mth.clamp(Mth.floor(catmullRom(bRow[0], bRow[1], bRow[2], bRow[3], fz) + 0.5D), 0, 255);
+		return (r << 16) | (g << 8) | b;
 	}
 
 	private SatelliteSurface classifySatelliteSurface(
-			final byte detailLevel,
-			final double lat,
-			final double lon,
-			final Holder<Biome> biomeHolder,
-			final int worldX,
-			final int worldZ,
+			final int rgb,
+			final String biomeId,
+			final LegacyCover cover,
 			final boolean aboveSnowLine) {
-		final int zoom = detailLevelSatelliteZoom(detailLevel, lat);
-		final int rgb = satelliteSampler.sampleRgb(lat, lon, zoom);
 		if (rgb < 0) {
-			return fallbackSurfaceFromBiome(biomeHolder, aboveSnowLine);
+			return fallbackSurfaceFromCoverAndBiome(cover, biomeId, aboveSnowLine);
 		}
 
 		final double r = ((rgb >> 16) & 0xFF) / 255.0D;
@@ -520,6 +975,13 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 				(vari * 0.9D) + (Math.max(0.0D, exg) * 0.55D) + (Math.max(0.0D, greenDominance) * 0.6D),
 				0.0D,
 				1.0D);
+		final String biome = biomeId == null ? "" : biomeId.toLowerCase();
+		final boolean biomeDesert = biome.contains("desert");
+		final boolean biomeBadlands = biome.contains("badlands");
+		final boolean biomeRocky = biome.contains("mountain")
+				|| biome.contains("peak")
+				|| biome.contains("stony")
+				|| biome.contains("windswept");
 
 		// Enhanced color classification based on satellite imagery color codes
 		
@@ -579,7 +1041,11 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		}
 
 		// 5. ALPINE ROCK DETECTION (prioritize mountain limestone/granite over dirt)
-		if (saturation < 0.30D && hue >= 18.0D && hue <= 60.0D && value > 0.50D) {
+		if ((aboveSnowLine || biomeRocky)
+				&& saturation < 0.30D
+				&& hue >= 18.0D
+				&& hue <= 60.0D
+				&& value > 0.50D) {
 			if (value > 0.78D) {
 				return new SatelliteSurface(Blocks.SMOOTH_STONE.defaultBlockState(), 0.0D, true);
 			}
@@ -646,6 +1112,56 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		// 10. GRAY DETECTION (Light Gray → Stone/Andesite, Dark Gray → Basalt/Blackstone)
 		// Also urban areas and asphalt
 		if (saturation < 0.17D && value > 0.22D) {
+			if (isForestCover(cover) || isGrassOrCropCover(cover)) {
+				if (value > 0.60D) {
+					return new SatelliteSurface(Blocks.GRASS_BLOCK.defaultBlockState(), Math.max(0.16D, vegetationStrength), false);
+				}
+				if (value > 0.42D) {
+					return new SatelliteSurface(Blocks.PODZOL.defaultBlockState(), Math.max(0.10D, vegetationStrength * 0.6D), false);
+				}
+				return new SatelliteSurface(Blocks.COARSE_DIRT.defaultBlockState(), Math.max(0.06D, vegetationStrength * 0.45D), false);
+			}
+
+			if (isFloodedCover(cover)) {
+				return new SatelliteSurface(Blocks.MUD.defaultBlockState(), 0.10D, false);
+			}
+
+			if (cover == LegacyCover.URBAN) {
+				if (value > 0.74D) {
+					return new SatelliteSurface(Blocks.STONE_BRICKS.defaultBlockState(), 0.0D, true);
+				}
+				if (value >= 0.52D) {
+					return new SatelliteSurface(Blocks.ANDESITE.defaultBlockState(), 0.0D, true);
+				}
+				if (value >= 0.38D) {
+					return new SatelliteSurface(Blocks.STONE.defaultBlockState(), 0.0D, true);
+				}
+				if (value >= 0.24D) {
+					return new SatelliteSurface(Blocks.BLACK_CONCRETE.defaultBlockState(), 0.0D, true);
+				}
+				return new SatelliteSurface(Blocks.COBBLED_DEEPSLATE.defaultBlockState(), 0.0D, true);
+			}
+
+			if (isBareCover(cover)) {
+				if (biomeDesert) {
+					return new SatelliteSurface(Blocks.SAND.defaultBlockState(), 0.0D, false);
+				}
+				if (biomeBadlands) {
+					return new SatelliteSurface(Blocks.RED_SAND.defaultBlockState(), 0.0D, false);
+				}
+				if (biomeRocky || aboveSnowLine) {
+					if (value > 0.65D) {
+						return new SatelliteSurface(Blocks.ANDESITE.defaultBlockState(), 0.0D, true);
+					}
+					return new SatelliteSurface(Blocks.STONE.defaultBlockState(), 0.0D, true);
+				}
+				return new SatelliteSurface(Blocks.COARSE_DIRT.defaultBlockState(), 0.0D, false);
+			}
+
+			if (!isBareCover(cover)) {
+				return fallbackSurfaceFromCoverAndBiome(cover, biomeId, aboveSnowLine);
+			}
+
 			// Light Gray (urban stone/concrete)
 			if (value > 0.74D) {
 				return new SatelliteSurface(Blocks.STONE_BRICKS.defaultBlockState(), 0.0D, true);
@@ -676,31 +1192,66 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		}
 
 		// 10. FALLBACK: Biome-based safety net (V2-only)
-		return fallbackSurfaceFromBiome(biomeHolder, aboveSnowLine);
+		return fallbackSurfaceFromCoverAndBiome(cover, biomeId, aboveSnowLine);
 	}
 
-	private static SatelliteSurface fallbackSurfaceFromBiome(
-			final Holder<Biome> biomeHolder,
+	private static SatelliteSurface fallbackSurfaceFromCoverAndBiome(
+			final LegacyCover cover,
+			final String biomeId,
 			final boolean aboveSnowLine) {
 		if (aboveSnowLine) {
 			return new SatelliteSurface(Blocks.SNOW_BLOCK.defaultBlockState(), 0.0D, false);
 		}
 
-		final String biomeId = biomeHolder.unwrapKey()
-				.map(key -> key.identifier().toString())
-				.orElse("")
-				.toLowerCase();
+		if (isFloodedCover(cover)) {
+			return new SatelliteSurface(Blocks.MUD.defaultBlockState(), 0.10D, false);
+		}
 
-		if (biomeId.contains("desert")) {
+		if (isForestCover(cover)) {
+			return new SatelliteSurface(Blocks.PODZOL.defaultBlockState(), 0.25D, false);
+		}
+
+		if (isGrassOrCropCover(cover)) {
+			return new SatelliteSurface(Blocks.GRASS_BLOCK.defaultBlockState(), 0.12D, false);
+		}
+
+		if (cover == LegacyCover.URBAN) {
+			return new SatelliteSurface(Blocks.STONE_BRICKS.defaultBlockState(), 0.0D, true);
+		}
+
+		if (isBareCover(cover)) {
+			final String biome = biomeId == null ? "" : biomeId.toLowerCase();
+			if (biome.contains("desert")) {
+				return new SatelliteSurface(Blocks.SAND.defaultBlockState(), 0.0D, false);
+			}
+			if (biome.contains("badlands")) {
+				return new SatelliteSurface(Blocks.RED_SAND.defaultBlockState(), 0.0D, false);
+			}
+			return new SatelliteSurface(Blocks.COARSE_DIRT.defaultBlockState(), 0.0D, false);
+		}
+
+		return fallbackSurfaceFromBiome(biomeId, aboveSnowLine);
+	}
+
+	private static SatelliteSurface fallbackSurfaceFromBiome(
+			final String biomeId,
+			final boolean aboveSnowLine) {
+		if (aboveSnowLine) {
+			return new SatelliteSurface(Blocks.SNOW_BLOCK.defaultBlockState(), 0.0D, false);
+		}
+
+		final String biome = biomeId == null ? "" : biomeId.toLowerCase();
+
+		if (biome.contains("desert")) {
 			return new SatelliteSurface(Blocks.SAND.defaultBlockState(), 0.0D, false);
 		}
-		if (biomeId.contains("badlands")) {
+		if (biome.contains("badlands")) {
 			return new SatelliteSurface(Blocks.RED_SAND.defaultBlockState(), 0.0D, false);
 		}
-		if (biomeId.contains("mountain") || biomeId.contains("peak") || biomeId.contains("stony")) {
+		if (biome.contains("mountain") || biome.contains("peak") || biome.contains("stony")) {
 			return new SatelliteSurface(Blocks.STONE.defaultBlockState(), 0.0D, true);
 		}
-		if (biomeId.contains("taiga") || biomeId.contains("forest") || biomeId.contains("jungle")) {
+		if (biome.contains("taiga") || biome.contains("forest") || biome.contains("jungle")) {
 			return new SatelliteSurface(Blocks.PODZOL.defaultBlockState(), 0.25D, false);
 		}
 
@@ -770,30 +1321,112 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		return Mth.clamp(zoom, 5, 15);
 	}
 
-	private static int satelliteSampleStrideColumns(final byte detailLevel) {
+	private int detailLevelOvertureZoom(final byte detailLevel, final double latitude) {
 		final int level = Byte.toUnsignedInt(detailLevel);
-		return switch (level) {
-			case 0, 1, 2, 3, 4 -> 1;
-			case 5, 6 -> 2;
-			case 7 -> 4;
-			case 8 -> 6;
-			case 9 -> 8;
-			default -> 12;
+		int zoom = switch (level) {
+			case 0, 1 -> 15;
+			case 2 -> 14;
+			case 3 -> 13;
+			case 4 -> 12;
+			case 5 -> 11;
+			case 6 -> 10;
+			case 7 -> 9;
+			case 8 -> 8;
+			default -> 7;
 		};
+
+		final int lodBlockSpan = 1 << Math.min(level, 24);
+		final double metersPerColumn = lodBlockSpan * projection.idealMetersPerBlock();
+		if (metersPerColumn >= 4096.0D) {
+			zoom = Math.min(zoom, 7);
+		} else if (metersPerColumn >= 2048.0D) {
+			zoom = Math.min(zoom, 8);
+		} else if (metersPerColumn >= 1024.0D) {
+			zoom = Math.min(zoom, 9);
+		}
+
+		final double absLat = Math.abs(latitude);
+		if (absLat >= 70.0D) {
+			zoom -= 2;
+		} else if (absLat >= 55.0D) {
+			zoom -= 1;
+		}
+
+		return Mth.clamp(zoom, 6, 15);
 	}
 
-	private static int biomeSampleStrideColumns(final byte detailLevel) {
-		final int level = Byte.toUnsignedInt(detailLevel);
-		return switch (level) {
-			case 0, 1, 2 -> 1;
-			case 3 -> 2;
-			case 4 -> 4;
-			case 5 -> 8;
-			case 6 -> 12;
-			case 7 -> 16;
-			case 8 -> 24;
-			default -> 32;
+	private static int satelliteSampleStrideColumns(final byte detailLevel, final V2Policy policy) {
+		final int base = switch (policy) {
+			case LEVEL_3_HIGH_RES -> 2;
+			case LEVEL_4_SENTINEL_10M -> 3;
+			case LEVEL_5_SENTINEL_10M_VEG -> 4;
+			case LEVEL_6_30M -> 6;
+			case LEVEL_7_DOWNSAMPLED -> 8;
+			case LEVEL_8_MODIS -> 12;
 		};
+
+		final int level = Byte.toUnsignedInt(detailLevel);
+		if (level >= 8) {
+			return Math.max(base, 12);
+		}
+		if (level >= 6) {
+			return Math.max(base, 8);
+		}
+		return base;
+	}
+
+	private static int overtureSampleStrideColumns(final byte detailLevel, final V2Policy policy) {
+		final int base = switch (policy) {
+			case LEVEL_3_HIGH_RES -> 2;
+			case LEVEL_4_SENTINEL_10M -> 3;
+			case LEVEL_5_SENTINEL_10M_VEG -> 4;
+			case LEVEL_6_30M -> 5;
+			case LEVEL_7_DOWNSAMPLED -> 6;
+			case LEVEL_8_MODIS -> 8;
+		};
+
+		final int level = Byte.toUnsignedInt(detailLevel);
+		if (level >= 8) {
+			return Math.max(base, 10);
+		}
+		if (level >= 6) {
+			return Math.max(base, 6);
+		}
+		return base;
+	}
+
+	private static int treeCoverSampleStrideColumns(final byte detailLevel, final V2Policy policy) {
+		final int satelliteStride = satelliteSampleStrideColumns(detailLevel, policy);
+		final int base = Math.max(2, satelliteStride * 2);
+
+		final int level = Byte.toUnsignedInt(detailLevel);
+		if (level >= 8) {
+			return Math.max(base, 24);
+		}
+		if (level >= 6) {
+			return Math.max(base, 12);
+		}
+		return base;
+	}
+
+	private static int biomeSampleStrideColumns(final byte detailLevel, final V2Policy policy) {
+		final int base = switch (policy) {
+			case LEVEL_3_HIGH_RES -> 1;
+			case LEVEL_4_SENTINEL_10M -> 2;
+			case LEVEL_5_SENTINEL_10M_VEG -> 3;
+			case LEVEL_6_30M -> 4;
+			case LEVEL_7_DOWNSAMPLED -> 6;
+			case LEVEL_8_MODIS -> 8;
+		};
+
+		final int level = Byte.toUnsignedInt(detailLevel);
+		if (level >= 8) {
+			return Math.max(base, 8);
+		}
+		if (level >= 6) {
+			return Math.max(base, 5);
+		}
+		return base;
 	}
 
 	private static double sampleElevationBicubic(final ShortRaster raster, final double x, final double z) {
@@ -849,6 +1482,162 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 		return (h >>> 11) * 0x1.0p-53;
 	}
 
+	private static double satlasClassToCanopyStrength(final int satlasClass) {
+		return SatlasTreeCoverSampler.classToCanopyStrength(satlasClass);
+	}
+
+	private static double resolveCanopyStrength(
+			final double satlasCanopyStrength,
+			final double satelliteVegetationStrength) {
+		if (satlasCanopyStrength >= 0.0D) {
+			return satlasCanopyStrength;
+		}
+		if (satelliteVegetationStrength <= 0.0D) {
+			return 0.0D;
+		}
+		return Mth.clamp(satelliteVegetationStrength * 0.55D, 0.0D, 0.85D);
+	}
+
+	private static CanopyColumn resolveMinecraftStyleCanopyColumn(
+			final String biomeId,
+			final int worldX,
+			final int worldZ,
+			final int lodBlockSpan,
+			final double canopyStrength) {
+		if (canopyStrength <= 0.02D) {
+			return null;
+		}
+
+		final int gridSize = minecraftTreeGridSize(lodBlockSpan);
+		final int cellX = Math.floorDiv(worldX, gridSize);
+		final int cellZ = Math.floorDiv(worldZ, gridSize);
+		final int radiusBias = canopyStrength >= 0.75D ? 1 : 0;
+
+		int bestDist = Integer.MAX_VALUE;
+		int bestRadius = 0;
+		int bestHash = 0;
+
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				final int testCellX = cellX + dx;
+				final int testCellZ = cellZ + dz;
+				final int centerHash = mixCanopyHash(testCellX, testCellZ, V2_TREE_CENTER_SALT);
+				final int roll = (centerHash >>> 24) & 0xFF;
+				final int threshold = Mth.clamp((int) Math.round(canopyStrength * 255.0D * 0.85D), 0, 255);
+				if (roll > threshold) {
+					continue;
+				}
+
+				final int centerX = testCellX * gridSize + Math.floorMod(centerHash, gridSize);
+				final int centerZ = testCellZ * gridSize + Math.floorMod(centerHash >>> 8, gridSize);
+				final int dist = Math.max(Math.abs(worldX - centerX), Math.abs(worldZ - centerZ));
+
+				int radius = 2 + radiusBias;
+				if (((centerHash >>> 19) & 0x3) == 0) {
+					radius++;
+				}
+				radius = Math.max(1, Math.min(radius, 4));
+
+				if (dist <= radius && dist < bestDist) {
+					bestDist = dist;
+					bestRadius = radius;
+					bestHash = centerHash;
+				}
+			}
+		}
+
+		if (bestDist == Integer.MAX_VALUE) {
+			return null;
+		}
+
+		final TreePalette palette = treePaletteFromBiomeId(biomeId, bestHash);
+		int trunkHeight = 4 + ((bestHash >>> 16) & 1);
+		if (canopyStrength >= 0.85D && ((bestHash >>> 21) & 1) == 1) {
+			trunkHeight++;
+		}
+		if (lodBlockSpan >= 8) {
+			trunkHeight = Math.max(3, trunkHeight - 1);
+		}
+
+		final int crownBase = Math.max(1, trunkHeight - 2);
+
+		if (bestDist == 0) {
+			int leavesHeight = 2 + ((bestHash >>> 20) & 1);
+			if (lodBlockSpan >= 4) {
+				leavesHeight = Math.max(1, leavesHeight - 1);
+			}
+			return new CanopyColumn(trunkHeight, 0, leavesHeight, palette.leaves(), palette.log());
+		}
+
+		int leafLift = crownBase;
+		if (bestDist >= bestRadius) {
+			leafLift = Math.max(1, crownBase - 1);
+		}
+
+		int leavesHeight = bestDist >= bestRadius ? 1 : 2;
+		if (lodBlockSpan >= 8) {
+			leavesHeight = 1;
+		}
+
+		return new CanopyColumn(0, leafLift, leavesHeight, palette.leaves(), null);
+	}
+
+	private static int minecraftTreeGridSize(final int lodBlockSpan) {
+		if (lodBlockSpan <= 1) {
+			return 6;
+		}
+		if (lodBlockSpan <= 2) {
+			return 7;
+		}
+		if (lodBlockSpan <= 4) {
+			return 8;
+		}
+		if (lodBlockSpan <= 8) {
+			return 10;
+		}
+		return 12;
+	}
+
+	private static int mixCanopyHash(final int x, final int z, final int seed) {
+		int h = seed;
+		h ^= x * 0x1F1F1F1F;
+		h = Integer.rotateLeft(h, 13);
+		h ^= z * 0x45D9F3B;
+		h ^= (h >>> 16);
+		h *= 0x7FEB352D;
+		h ^= (h >>> 15);
+		h *= 0x846CA68B;
+		h ^= (h >>> 16);
+		return h;
+	}
+
+	private static TreePalette treePaletteFromBiomeId(final String biomeId, final int hash) {
+		final String biome = biomeId == null ? "" : biomeId.toLowerCase();
+
+		if (biome.contains("mangrove") || biome.contains("swamp")) {
+			return new TreePalette(Blocks.MANGROVE_LEAVES.defaultBlockState(), Blocks.MANGROVE_LOG.defaultBlockState());
+		}
+		if (biome.contains("taiga") || biome.contains("snowy")) {
+			return new TreePalette(Blocks.SPRUCE_LEAVES.defaultBlockState(), Blocks.SPRUCE_LOG.defaultBlockState());
+		}
+		if (biome.contains("jungle")) {
+			return new TreePalette(Blocks.JUNGLE_LEAVES.defaultBlockState(), Blocks.JUNGLE_LOG.defaultBlockState());
+		}
+		if (biome.contains("savanna")) {
+			return new TreePalette(Blocks.ACACIA_LEAVES.defaultBlockState(), Blocks.ACACIA_LOG.defaultBlockState());
+		}
+		if (biome.contains("cherry")) {
+			return new TreePalette(Blocks.CHERRY_LEAVES.defaultBlockState(), Blocks.CHERRY_LOG.defaultBlockState());
+		}
+		if (biome.contains("dark_forest")) {
+			return new TreePalette(Blocks.DARK_OAK_LEAVES.defaultBlockState(), Blocks.DARK_OAK_LOG.defaultBlockState());
+		}
+		if (((hash >>> 27) & 0x3) == 0) {
+			return new TreePalette(Blocks.BIRCH_LEAVES.defaultBlockState(), Blocks.BIRCH_LOG.defaultBlockState());
+		}
+		return new TreePalette(Blocks.OAK_LEAVES.defaultBlockState(), Blocks.OAK_LOG.defaultBlockState());
+	}
+
 	@Override
 	public EDhApiWorldGeneratorReturnType getReturnType() {
 		return v1Fallback.getReturnType();
@@ -867,7 +1656,10 @@ public final class LegacyLodGeneratorV2 implements IDhApiWorldGenerator {
 	private record SatelliteSurface(BlockState blockState, double vegetationStrength, boolean forceExposeRock) {
 	}
 
-	private record BiomeSample(Holder<Biome> holder, @Nullable IDhApiBiomeWrapper wrapper) {
+	private record TreePalette(BlockState leaves, BlockState log) {
+	}
+
+	private record BiomeSample(String biomeId, @Nullable IDhApiBiomeWrapper wrapper) {
 	}
 
 	private static class VanillaSurfaceLodOutput {

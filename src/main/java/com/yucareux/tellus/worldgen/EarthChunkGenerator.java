@@ -21,6 +21,7 @@ import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
@@ -212,6 +213,8 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	private static final int CHUNK_SIDE = 16;
 	private static final int CHUNK_MASK = CHUNK_SIDE - 1;
 	private static final int CHUNK_AREA = CHUNK_SIDE * CHUNK_SIDE;
+	private static final int FAST_SPAWN_CHUNK_BUDGET =
+			Math.max(1, Integer.getInteger("tellus.fastSpawn.chunkBudget", 192));
 	private static final int TREE_MAX_SURFACE_DROP = 2;
 	private static final int LOD_MIN_WATER_DEPTH = 25;
 	private static final int SURFACE_ALPINE_HEIGHT_ABOVE_SEA = 200;
@@ -261,10 +264,15 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	private final ThreadLocal<WaterChunkCache> waterChunkCache = ThreadLocal.withInitial(WaterChunkCache::new);
 	private volatile long worldSeed = 0L;
 	private final AtomicBoolean fastSpawnMode = new AtomicBoolean(true);
+	private final AtomicInteger fastSpawnChunksRemaining = new AtomicInteger(FAST_SPAWN_CHUNK_BUDGET);
+	private final int spawnOriginOffsetX;
+	private final int spawnOriginOffsetZ;
 
 	public EarthChunkGenerator(BiomeSource biomeSource, EarthGeneratorSettings settings) {
 		super(biomeSource, biome -> generationSettingsForBiome(biome, settings));
 		this.settings = settings;
+		this.spawnOriginOffsetX = EarthCoordinateShift.spawnOffsetX(settings);
+		this.spawnOriginOffsetZ = EarthCoordinateShift.spawnOffsetZ(settings);
 		this.seaLevel = settings.resolveSeaLevel();
 		EarthGeneratorSettings.HeightLimits limits = EarthGeneratorSettings.resolveHeightLimits(settings);
 		this.minY = limits.minY();
@@ -312,13 +320,12 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	}
 
 	public BlockPos getSurfacePosition(LevelHeightAccessor heightAccessor, double latitude, double longitude) {
-		double blocksPerDegree = blocksPerDegree(this.settings.worldScale());
-		int spawnX = Mth.floor(longitude * blocksPerDegree);
-		int spawnZ = Mth.floor(-latitude * blocksPerDegree);
-		WaterSurfaceResolver.WaterColumnData column = this.waterResolver.resolveColumnData(spawnX, spawnZ);
-		int surface = column.terrainSurface();
-		if (column.hasWater()) {
-			surface = Math.max(surface, column.waterSurface());
+		int spawnX = EarthCoordinateShift.worldBlockXFromLongitude(this.settings, longitude);
+		int spawnZ = EarthCoordinateShift.worldBlockZFromLatitude(this.settings, latitude);
+		int surface = sampleSurfaceHeight(spawnX, spawnZ);
+		int spawnCover = sampleCoverClass(spawnX, spawnZ);
+		if (spawnCover == ESA_WATER || spawnCover == ESA_NO_DATA) {
+			surface = Math.max(surface, this.seaLevel);
 		}
 		int maxY = heightAccessor.getMaxY() - 1;
 		int spawnY = Mth.clamp(surface + 1, heightAccessor.getMinY(), maxY);
@@ -326,11 +333,19 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	}
 
 	public double longitudeFromBlock(double blockX) {
-		return blockX / blocksPerDegree(this.settings.worldScale());
+		return EarthCoordinateShift.longitudeFromWorldBlock(this.settings, blockX);
 	}
 
 	public double latitudeFromBlock(double blockZ) {
-		return -blockZ / blocksPerDegree(this.settings.worldScale());
+		return EarthCoordinateShift.latitudeFromWorldBlock(this.settings, blockZ);
+	}
+
+	private int earthBlockX(int worldX) {
+		return worldX + this.spawnOriginOffsetX;
+	}
+
+	private int earthBlockZ(int worldZ) {
+		return worldZ + this.spawnOriginOffsetZ;
 	}
 
 	private static double blocksPerDegree(double worldScale) {
@@ -493,9 +508,18 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 			@NonNull StructureManager structures,
 			@NonNull ChunkAccess chunk
 	) {
-		disableFastSpawnMode();
 		fillTellusSurface(random, structures, chunk);
+		consumeFastSpawnBudget();
 		return Objects.requireNonNull(CompletableFuture.<ChunkAccess>completedFuture(chunk), "completedFuture");
+	}
+
+	private void consumeFastSpawnBudget() {
+		if (!isFastSpawnMode()) {
+			return;
+		}
+		if (this.fastSpawnChunksRemaining.decrementAndGet() <= 0) {
+			disableFastSpawnMode();
+		}
 	}
 
 	private void fillTellusSurface(
@@ -505,6 +529,7 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	) {
 		ChunkPos pos = chunk.getPos();
 		TellusWorldgenSources.prefetchForChunk(pos, this.settings);
+		final boolean fastSpawn = isFastSpawnMode();
 		int chunkMinY = chunk.getMinY();
 		int chunkHeight = chunk.getHeight();
 		int chunkMaxY = chunkMinY + chunkHeight;
@@ -523,7 +548,7 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 					this.settings.maxAltitude()
 			);
 		}
-		WaterSurfaceResolver.WaterChunkData waterData = resolveChunkWaterData(pos);
+		WaterSurfaceResolver.WaterChunkData waterData = fastSpawn ? null : resolveChunkWaterData(pos);
 		int deepslateStart = this.minY + 64;
 		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
@@ -555,7 +580,7 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 				for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
 				int worldZ = chunkMinZ + localZ;
 				int index = chunkIndex(localX, localZ);
-				int sampledCoverClass = LAND_COVER_SOURCE.sampleCoverClass(worldX, worldZ, this.settings.worldScale());
+				int sampledCoverClass = sampleCoverClass(worldX, worldZ);
 				int gridIndex = (localZ + step) * gridSize + (localX + step);
 				int cachedSurface = heightGrid[gridIndex];
 				int clampedCachedSurface = Mth.clamp(cachedSurface, chunkMinY, chunkMaxY - 1);
@@ -568,18 +593,20 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 						waterSlope
 				);
 				boolean suppressWater = sampledCoverClass == ESA_WATER && coverClass != sampledCoverClass;
-				ColumnHeights column = resolveColumnHeights(
-						worldX,
-						worldZ,
-						localX,
-						localZ,
-						chunkMinY,
-						chunkMaxY,
-						coverClass,
-						waterData,
-						cachedSurface,
-						suppressWater
-				);
+				ColumnHeights column = fastSpawn
+						? resolveFastColumnHeights(worldX, worldZ, chunkMinY, chunkMaxY, coverClass)
+						: resolveColumnHeights(
+								worldX,
+								worldZ,
+								localX,
+								localZ,
+								chunkMinY,
+								chunkMaxY,
+								coverClass,
+								waterData,
+								cachedSurface,
+								suppressWater
+						);
 				int surface = column.terrainSurface();
 				coverClasses[index] = coverClass;
 				terrainSurfaces[index] = surface;
@@ -1423,9 +1450,11 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 
 	private int sampleSurfaceHeight(int blockX, int blockZ) {
 		boolean oceanZoom = useOceanZoom(blockX, blockZ);
+		int earthX = earthBlockX(blockX);
+		int earthZ = earthBlockZ(blockZ);
 		double elevation = ELEVATION_SOURCE.sampleElevationMeters(
-				blockX,
-				blockZ,
+				earthX,
+				earthZ,
 				this.settings.worldScale(),
 				oceanZoom,
 				this.settings.demProvider()
@@ -1438,15 +1467,17 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	}
 
 	private boolean useOceanZoom(double blockX, double blockZ) {
+		double earthX = blockX + this.spawnOriginOffsetX;
+		double earthZ = blockZ + this.spawnOriginOffsetZ;
 		TellusLandMaskSource.LandMaskSample landSample =
-				LAND_MASK_SOURCE.sampleLandMask(blockX, blockZ, this.settings.worldScale());
+				LAND_MASK_SOURCE.sampleLandMask(earthX, earthZ, this.settings.worldScale());
 		if (!landSample.known()) {
 			return true;
 		}
 		if (landSample.land()) {
 			return false;
 		}
-		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(earthX, earthZ, this.settings.worldScale());
 		return coverClass == ESA_NO_DATA || coverClass == ESA_WATER;
 	}
 
@@ -1723,7 +1754,7 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 	}
 
 	public int sampleCoverClass(int worldX, int worldZ) {
-		return LAND_COVER_SOURCE.sampleCoverClass(worldX, worldZ, this.settings.worldScale());
+		return LAND_COVER_SOURCE.sampleCoverClass(earthBlockX(worldX), earthBlockZ(worldZ), this.settings.worldScale());
 	}
 
 	private int resolveEffectiveCoverClassForTerrain(
@@ -1757,8 +1788,8 @@ public final class EarthChunkGenerator extends ChunkGenerator {
 			return false;
 		}
 		TellusLandMaskSource.LandMaskSample landMask = LAND_MASK_SOURCE.sampleLandMask(
-				worldX,
-				worldZ,
+				earthBlockX(worldX),
+				earthBlockZ(worldZ),
 				this.settings.worldScale()
 		);
 		if (landMask.known() && !landMask.land()) {

@@ -72,21 +72,23 @@ final class TellusWorldgenSources {
 		}
 		int centerX = pos.getMinBlockX() + 8;
 		int centerZ = pos.getMinBlockZ() + 8;
+		int earthCenterX = centerX + EarthCoordinateShift.spawnOffsetX(settings);
+		int earthCenterZ = centerZ + EarthCoordinateShift.spawnOffsetZ(settings);
 		double worldScale = settings.worldScale();
 		if (LAND_COVER_PREFETCH_RADIUS > 0) {
-			submitPrefetch(() -> LAND_COVER.prefetchTiles(centerX, centerZ, worldScale, LAND_COVER_PREFETCH_RADIUS));
+			submitPrefetch(() -> LAND_COVER.prefetchTiles(earthCenterX, earthCenterZ, worldScale, LAND_COVER_PREFETCH_RADIUS));
 		}
 		if (ELEVATION_PREFETCH_RADIUS > 0) {
 			submitPrefetch(() -> ELEVATION.prefetchTiles(
-					centerX,
-					centerZ,
+					earthCenterX,
+					earthCenterZ,
 					worldScale,
 					ELEVATION_PREFETCH_RADIUS,
 					settings.demProvider()
 			));
 		}
 		if (LAND_MASK_PREFETCH_RADIUS > 0) {
-			submitPrefetch(() -> LAND_MASK.prefetchTiles(centerX, centerZ, worldScale, LAND_MASK_PREFETCH_RADIUS));
+			submitPrefetch(() -> LAND_MASK.prefetchTiles(earthCenterX, earthCenterZ, worldScale, LAND_MASK_PREFETCH_RADIUS));
 		}
 		if (WATER_PREFETCH_ENABLED && WATER_PREFETCH_RADIUS > 0) {
 			submitPrefetch(() -> waterResolver(settings).prefetchRegionsForChunk(pos.x, pos.z, WATER_PREFETCH_RADIUS));

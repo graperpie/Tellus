@@ -20,6 +20,7 @@ import com.yucareux.tellus.legacy.backend.raster.EnumRaster;
 import com.yucareux.tellus.legacy.backend.raster.RasterShape;
 import com.yucareux.tellus.legacy.backend.raster.ShortRaster;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
+import com.yucareux.tellus.worldgen.EarthCoordinateShift;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Blocks;
@@ -73,6 +74,8 @@ public final class LegacyLodGenerator implements IDhApiWorldGenerator {
     private final SnowLineGrid snowLineGrid;
     private final EarthBiomeSource biomeSource;
     private final ThreadLocal<WrapperCache> wrapperCache;
+    private final int spawnOriginOffsetX;
+    private final int spawnOriginOffsetZ;
 
     public LegacyLodGenerator(final IDhApiLevelWrapper levelWrapper, final EarthChunkGenerator generator) {
         this.levelWrapper = levelWrapper;
@@ -96,6 +99,8 @@ public final class LegacyLodGenerator implements IDhApiWorldGenerator {
         this.snowLineGrid = new SnowLineGrid();
         this.biomeSource = (EarthBiomeSource) generator.getBiomeSource();
         this.wrapperCache = ThreadLocal.withInitial(() -> new WrapperCache(levelWrapper));
+        this.spawnOriginOffsetX = EarthCoordinateShift.spawnOffsetX(this.settings);
+        this.spawnOriginOffsetZ = EarthCoordinateShift.spawnOffsetZ(this.settings);
     }
 
     @Override
@@ -117,9 +122,11 @@ public final class LegacyLodGenerator implements IDhApiWorldGenerator {
 
         final int x0 = SectionPos.sectionToBlockCoord(chunkPosMinX);
         final int z0 = SectionPos.sectionToBlockCoord(chunkPosMinZ);
-        final int x1 = x0 + lodSizeBlocks - 1;
-        final int z1 = z0 + lodSizeBlocks - 1;
-        final GeoView blockSampleView = new GeoView(x0, z0, x1, z1);
+        final int earthX0 = x0 + this.spawnOriginOffsetX;
+        final int earthZ0 = z0 + this.spawnOriginOffsetZ;
+        final int earthX1 = earthX0 + lodSizeBlocks - 1;
+        final int earthZ1 = earthZ0 + lodSizeBlocks - 1;
+        final GeoView blockSampleView = new GeoView(earthX0, earthZ0, earthX1, earthZ1);
 
         final RasterShape outputShape = new RasterShape(lodSizePoints, lodSizePoints);
 
@@ -192,8 +199,8 @@ public final class LegacyLodGenerator implements IDhApiWorldGenerator {
                 final int surfaceY = Mth.clamp(Mth.floor((elevationValue * heightScale) + settings.heightOffset()),
                         minY, maxY);
                 final LegacyCover cover = landCover.get(x, z);
-                final double lat = projection.lat(worldX, worldZ);
-                final double lon = projection.lon(worldX, worldZ);
+                final double lat = projection.lat(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+                final double lon = projection.lon(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
                 final int snowLineMeters = snowLineGrid.getSnowLineElevation(lat, lon);
                 final boolean aboveSnowLine = elevationValue >= snowLineMeters;
 
@@ -508,8 +515,8 @@ public final class LegacyLodGenerator implements IDhApiWorldGenerator {
     private BlockState getSurfaceMaterial(final LegacyCover cover, final int surfaceY, final int worldX,
             final int worldZ) {
         // Legacy surface rules
-        final double lat = projection.lat(worldX, worldZ);
-        final double lon = projection.lon(worldX, worldZ);
+        final double lat = projection.lat(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
+        final double lon = projection.lon(worldX + this.spawnOriginOffsetX, worldZ + this.spawnOriginOffsetZ);
 
         /*
          * if (isSnowyRegion(lat, lon, worldX, worldZ)) {

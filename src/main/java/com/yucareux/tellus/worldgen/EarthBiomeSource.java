@@ -60,6 +60,8 @@ public final class EarthBiomeSource extends BiomeSource {
 	private final @Nullable Holder<Biome> deepDark;
 	private final @NonNull WaterSurfaceResolver waterResolver;
 	private final int deepDarkCeiling;
+	private final int spawnOriginOffsetX;
+	private final int spawnOriginOffsetZ;
 	private volatile boolean fastSpawnMode = true;
 
 	public EarthBiomeSource(HolderGetter<Biome> biomeLookup, EarthGeneratorSettings settings) {
@@ -75,6 +77,8 @@ public final class EarthBiomeSource extends BiomeSource {
 		this.dripstoneCaves = resolveOptionalBiome(Biomes.DRIPSTONE_CAVES);
 		this.deepDark = resolveOptionalBiome(Biomes.DEEP_DARK);
 		this.waterResolver = TellusWorldgenSources.waterResolver(this.settings);
+		this.spawnOriginOffsetX = EarthCoordinateShift.spawnOffsetX(this.settings);
+		this.spawnOriginOffsetZ = EarthCoordinateShift.spawnOffsetZ(this.settings);
 		this.possibleBiomes = buildPossibleBiomes();
 	}
 
@@ -112,7 +116,7 @@ public final class EarthBiomeSource extends BiomeSource {
 		if (this.fastSpawnMode) {
 			return resolveFastSpawnSurfaceBiome(blockX, blockZ);
 		}
-		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		return resolveSurfaceBiomeAtBlock(blockX, blockZ, coverClass, null);
 	}
 
@@ -120,7 +124,7 @@ public final class EarthBiomeSource extends BiomeSource {
 		if (this.fastSpawnMode) {
 			return resolveFastSpawnSurfaceBiome(blockX, blockZ);
 		}
-		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		WaterSurfaceResolver.WaterColumnData column =
 				this.waterResolver.resolveColumnData(blockX, blockZ, coverClass);
 		Holder<Biome> surfaceBiome = resolveSurfaceBiomeAtBlock(blockX, blockZ, coverClass, column);
@@ -135,7 +139,7 @@ public final class EarthBiomeSource extends BiomeSource {
 	}
 
 	private @NonNull Holder<Biome> resolveFastSpawnSurfaceBiome(int blockX, int blockZ) {
-		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+		int coverClass = LAND_COVER_SOURCE.sampleCoverClass(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		if (coverClass == ESA_SNOW_ICE) {
 			return this.frozenPeaks;
 		}
@@ -175,9 +179,9 @@ public final class EarthBiomeSource extends BiomeSource {
 			}
 		}
 
-		String koppen = KOPPEN_SOURCE.sampleDitheredCode(blockX, blockZ, this.settings.worldScale());
+		String koppen = KOPPEN_SOURCE.sampleDitheredCode(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		if (koppen == null) {
-			koppen = KOPPEN_SOURCE.findNearestCode(blockX, blockZ, this.settings.worldScale());
+			koppen = KOPPEN_SOURCE.findNearestCode(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		}
 
 		ResourceKey<Biome> biomeKey = BiomeClassification.findBiomeKey(coverClass, koppen);
@@ -208,6 +212,14 @@ public final class EarthBiomeSource extends BiomeSource {
 			}
 		}
 		return holders;
+	}
+
+	private int earthBlockX(int worldBlockX) {
+		return worldBlockX + this.spawnOriginOffsetX;
+	}
+
+	private int earthBlockZ(int worldBlockZ) {
+		return worldBlockZ + this.spawnOriginOffsetZ;
 	}
 
 	private @NonNull Holder<Biome> resolveCaveBiome(

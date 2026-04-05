@@ -53,6 +53,9 @@ dependencies {
 	implementation "org.tukaani:xz:1.10"
 	include "org.tukaani:xz:1.10"
 
+	implementation "com.wdtinc:mapbox-vector-tile:3.1.0"
+	include "com.wdtinc:mapbox-vector-tile:3.1.0"
+
 	modImplementation "maven.modrinth:DistantHorizonsApi:${project.distant_horizons_api_version}"
 	modRuntimeOnly "maven.modrinth:DistantHorizons:${project.distant_horizons_version}"
 	

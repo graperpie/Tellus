@@ -1,13 +1,12 @@
 package com.yucareux.tellus.client.screen;
 
-import com.yucareux.tellus.legacy.backend.projection.Projection;
-import com.yucareux.tellus.legacy.backend.projection.cylindrical.Equirectangular;
 import com.yucareux.tellus.client.widget.map.SlippyMap;
 import com.yucareux.tellus.client.widget.map.SlippyMapPoint;
 import com.yucareux.tellus.client.widget.map.SlippyMapTileCache;
 import com.yucareux.tellus.client.widget.map.SlippyMapWidget;
 import com.yucareux.tellus.client.widget.map.component.MarkerMapComponent;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
+import com.yucareux.tellus.worldgen.EarthCoordinateShift;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -80,24 +79,23 @@ public final class SatelliteMapScreen extends Screen {
 		if (minecraft == null || minecraft.player == null) {
 			return new SlippyMapPoint(0.0D, 0.0D);
 		}
-		final double worldScale = resolveWorldScale(minecraft);
-		final Projection projection = new Equirectangular(worldScale);
-		final double lat = projection.lat(minecraft.player.getX(), minecraft.player.getZ());
-		final double lon = projection.lon(minecraft.player.getX(), minecraft.player.getZ());
+		final EarthGeneratorSettings settings = resolveSettings(minecraft);
+		final double lat = EarthCoordinateShift.latitudeFromWorldBlock(settings, minecraft.player.getZ());
+		final double lon = EarthCoordinateShift.longitudeFromWorldBlock(settings, minecraft.player.getX());
 		return new SlippyMapPoint(lat, lon);
 	}
 
-	private static double resolveWorldScale(final Minecraft client) {
+	private static EarthGeneratorSettings resolveSettings(final Minecraft client) {
 		if (client.getSingleplayerServer() != null && client.level != null) {
 			final var serverLevel = client.getSingleplayerServer().getLevel(client.level.dimension());
 			if (serverLevel != null) {
 				final ChunkGenerator generator = serverLevel.getChunkSource().getGenerator();
 				if (generator instanceof EarthChunkGenerator earthGenerator) {
-					return earthGenerator.settings().worldScale();
+					return earthGenerator.settings();
 				}
 			}
 		}
-		return EarthGeneratorSettings.DEFAULT.worldScale();
+		return EarthGeneratorSettings.DEFAULT;
 	}
 
 	private void closeScreen() {

@@ -80,6 +80,8 @@ public final class WaterSurfaceResolver {
 	private final int maxDistanceToShore;
 	private final int regionMargin;
 	private final boolean regionClamped;
+	private final int spawnOriginOffsetX;
+	private final int spawnOriginOffsetZ;
 
 	public WaterSurfaceResolver(
 			TellusLandCoverSource landCoverSource,
@@ -111,6 +113,8 @@ public final class WaterSurfaceResolver {
 				.maximumSize(MAX_REGION_CACHE)
 				.build();
 		this.regionSalt = Double.doubleToLongBits(settings.worldScale()) ^ 0x9E3779B97F4A7C15L;
+		this.spawnOriginOffsetX = EarthCoordinateShift.spawnOffsetX(settings);
+		this.spawnOriginOffsetZ = EarthCoordinateShift.spawnOffsetZ(settings);
 	}
 
 	public boolean isWaterClass(int coverClass) {
@@ -162,7 +166,7 @@ public final class WaterSurfaceResolver {
 	}
 
 	public WaterColumnData resolveColumnData(int blockX, int blockZ) {
-		int coverClass = this.landCoverSource.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+		int coverClass = this.landCoverSource.sampleCoverClass(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		return resolveColumnData(blockX, blockZ, coverClass);
 	}
 
@@ -176,7 +180,7 @@ public final class WaterSurfaceResolver {
 				return new WaterColumnData(false, false, surface, surface);
 			}
 			TellusLandMaskSource.LandMaskSample landMaskSample =
-					this.landMaskSource.sampleLandMask(blockX, blockZ, this.settings.worldScale());
+					this.landMaskSource.sampleLandMask(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 			int surface = sampleSurfaceHeight(blockX, blockZ, coverClass, landMaskSample);
 			return new WaterColumnData(false, false, surface, surface);
 		}
@@ -186,7 +190,7 @@ public final class WaterSurfaceResolver {
 		}
 		if (coverClass == ESA_NO_DATA) {
 			TellusLandMaskSource.LandMaskSample landMaskSample =
-					this.landMaskSource.sampleLandMask(blockX, blockZ, this.settings.worldScale());
+					this.landMaskSource.sampleLandMask(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 			int surface = sampleSurfaceHeight(blockX, blockZ, coverClass, landMaskSample);
 			if (surface > this.seaLevel) {
 				return new WaterColumnData(false, false, surface, surface);
@@ -274,13 +278,13 @@ public final class WaterSurfaceResolver {
 		double worldScale = this.settings.worldScale();
 		for (int z = minZ; z <= maxZ; z++) {
 			for (int x = minX; x <= maxX; x++) {
-				int coverClass = this.landCoverSource.sampleCoverClass(x, z, worldScale);
+				int coverClass = this.landCoverSource.sampleCoverClass(earthBlockX(x), earthBlockZ(z), worldScale);
 				if (coverClass == ESA_WATER) {
 					return true;
 				}
 				if (coverClass == ESA_NO_DATA) {
 					TellusLandMaskSource.LandMaskSample landMaskSample =
-							this.landMaskSource.sampleLandMask(x, z, worldScale);
+							this.landMaskSource.sampleLandMask(earthBlockX(x), earthBlockZ(z), worldScale);
 					int surface = sampleSurfaceHeight(x, z, coverClass, landMaskSample);
 					if (surface <= this.seaLevel) {
 						return true;
@@ -353,9 +357,9 @@ public final class WaterSurfaceResolver {
 			int coarseRow = coarseZ * coarseSize;
 			for (int dx = 0; dx < gridSize; dx++) {
 				int worldX = gridMinX + dx;
-				int coverClass = this.landCoverSource.sampleCoverClass(worldX, worldZ, worldScale);
+				int coverClass = this.landCoverSource.sampleCoverClass(earthBlockX(worldX), earthBlockZ(worldZ), worldScale);
 				TellusLandMaskSource.LandMaskSample landMaskSample =
-						this.landMaskSource.sampleLandMask(worldX, worldZ, worldScale);
+						this.landMaskSource.sampleLandMask(earthBlockX(worldX), earthBlockZ(worldZ), worldScale);
 				int surface = sampleSurfaceHeight(worldX, worldZ, coverClass, landMaskSample);
 				boolean isNoData = coverClass == ESA_NO_DATA;
 				boolean maskKnown = landMaskSample.known();
@@ -1461,8 +1465,8 @@ public final class WaterSurfaceResolver {
 
 	private int sampleSurfaceHeight(double blockX, double blockZ, boolean oceanZoom) {
 		double elevation = this.elevationSource.sampleElevationMeters(
-				blockX,
-				blockZ,
+				earthBlockX(blockX),
+				earthBlockZ(blockZ),
 				this.settings.worldScale(),
 				oceanZoom,
 				this.settings.demProvider()
@@ -1476,9 +1480,25 @@ public final class WaterSurfaceResolver {
 
 	private boolean useOceanZoom(double blockX, double blockZ) {
 		TellusLandMaskSource.LandMaskSample landSample =
-				this.landMaskSource.sampleLandMask(blockX, blockZ, this.settings.worldScale());
-		int coverClass = this.landCoverSource.sampleCoverClass(blockX, blockZ, this.settings.worldScale());
+				this.landMaskSource.sampleLandMask(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
+		int coverClass = this.landCoverSource.sampleCoverClass(earthBlockX(blockX), earthBlockZ(blockZ), this.settings.worldScale());
 		return useOceanZoom(landSample, coverClass);
+	}
+
+	private int earthBlockX(int worldBlockX) {
+		return worldBlockX + this.spawnOriginOffsetX;
+	}
+
+	private int earthBlockZ(int worldBlockZ) {
+		return worldBlockZ + this.spawnOriginOffsetZ;
+	}
+
+	private double earthBlockX(double worldBlockX) {
+		return worldBlockX + this.spawnOriginOffsetX;
+	}
+
+	private double earthBlockZ(double worldBlockZ) {
+		return worldBlockZ + this.spawnOriginOffsetZ;
 	}
 
 	private boolean useOceanZoom(TellusLandMaskSource.LandMaskSample landSample, int coverClass) {

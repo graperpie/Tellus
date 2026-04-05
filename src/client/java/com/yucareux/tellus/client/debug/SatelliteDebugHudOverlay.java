@@ -6,9 +6,8 @@ import com.yucareux.tellus.client.widget.map.SlippyMapPoint;
 import com.yucareux.tellus.client.widget.map.SlippyMapTile;
 import com.yucareux.tellus.client.widget.map.SlippyMapTileCache;
 import com.yucareux.tellus.client.widget.map.SlippyMapTilePos;
-import com.yucareux.tellus.legacy.backend.projection.Projection;
-import com.yucareux.tellus.legacy.backend.projection.cylindrical.Equirectangular;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
+import com.yucareux.tellus.worldgen.EarthCoordinateShift;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import com.mojang.blaze3d.platform.InputConstants;
 import java.util.Comparator;
@@ -69,11 +68,10 @@ public final class SatelliteDebugHudOverlay {
 			return;
 		}
 
-		final double worldScale = resolveWorldScale(client);
-		final Projection projection = new Equirectangular(worldScale);
+		final EarthGeneratorSettings settings = resolveSettings(client);
 		final SlippyMapPoint playerPoint = new SlippyMapPoint(
-				projection.lat(client.player.getX(), client.player.getZ()),
-				projection.lon(client.player.getX(), client.player.getZ()));
+				EarthCoordinateShift.latitudeFromWorldBlock(settings, client.player.getZ()),
+				EarthCoordinateShift.longitudeFromWorldBlock(settings, client.player.getX()));
 		this.map.focus(playerPoint.getLatitude(), playerPoint.getLongitude(), MINIMAP_ZOOM);
 
 		final int startX = client.getWindow().getGuiScaledWidth() - MAP_SIZE - MAP_PADDING;
@@ -148,20 +146,20 @@ public final class SatelliteDebugHudOverlay {
 		graphics.pose().popMatrix();
 	}
 
-	private static double resolveWorldScale(final Minecraft client) {
+	private static EarthGeneratorSettings resolveSettings(final Minecraft client) {
 		try {
 			if (client.getSingleplayerServer() != null && client.level != null) {
 				final var serverLevel = client.getSingleplayerServer().getLevel(client.level.dimension());
 				if (serverLevel != null) {
 					final ChunkGenerator generator = serverLevel.getChunkSource().getGenerator();
 					if (generator instanceof EarthChunkGenerator earthGenerator) {
-						return earthGenerator.settings().worldScale();
+						return earthGenerator.settings();
 					}
 				}
 			}
 		} catch (final Exception ignored) {
-			Tellus.LOGGER.debug("Failed to resolve world scale for satellite debug HUD");
+			Tellus.LOGGER.debug("Failed to resolve Earth settings for satellite debug HUD");
 		}
-		return EarthGeneratorSettings.DEFAULT.worldScale();
+		return EarthGeneratorSettings.DEFAULT;
 	}
 }
