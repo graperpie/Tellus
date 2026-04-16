@@ -1,6 +1,6 @@
 ## NOTE: very outdated compared to my local branch. i'll update this at some point unless someone really wants to look into the code.
 
-# a tellus fork that modifies the LOD generation code to stream in satelite imagery at various zoom(resolution) levels to compensate for N-sizd LOD tiles/sections.
+# a tellus fork that modifies the LOD generation code to stream in satelite imagery at various zoom(resolution) levels to compensate for N-sized LOD tiles/sections.
 
 ## The Problem
 currently, Tellus loads land cover, which is arguably accurate and an ideal type of data to use to determine what areas are sand, snow, grass, as well as water and trees. the problem with this, is that there is only one available resolution (1:10) for it. this means that for every 10 blocks or so, the client has to download new land cover data. 
