@@ -11,3 +11,4 @@ this satelite imagery implementation is made to counter that. because it is avai
 
 rough graph showcase:
 <img width="1312" height="937" alt="chart@600dpi" src="https://github.com/user-attachments/assets/a338f814-c03f-4f2c-a79b-7e8e94e06c08" />
+-# note: these are the approximate benchmarks WITHOUT osm data streaming, as it is the hard limit due to the lack of proper zoom levels (they do, but they suck)
