@@ -35,7 +35,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.util.Util;
 
 public final class TellusOsmBuildingSource implements TellusCacheHandle {
-   private static final String DEFAULT_PM_TILES_URL = "https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/tiles/2026-02-18.0/buildings.pmtiles";
+   private static final String DEFAULT_PM_TILES_URL = "https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/tiles/2026-08-19.0/buildings.pmtiles";
    private static final double MIN_LAT = -85.05112878;
    private static final double MAX_LAT = 85.05112878;
    private static final double MIN_LON = -180.0;

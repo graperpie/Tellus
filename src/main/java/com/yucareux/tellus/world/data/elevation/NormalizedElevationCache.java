@@ -7,7 +7,6 @@ import com.yucareux.tellus.cache.TellusCacheDomain;
 import com.yucareux.tellus.cache.TellusCacheHandle;
 import com.yucareux.tellus.cache.TellusCacheRegistry;
 import com.yucareux.tellus.world.data.elevation.TellusElevationSource.DemUsage;
-import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import com.yucareux.tellus.worldgen.EarthProjection;
 import java.io.IOException;
 import java.io.InputStream;
@@ -64,11 +63,10 @@ final class NormalizedElevationCache implements TellusCacheHandle {
       double projectedX,
       double projectedZ,
       double resolutionMeters,
-      EarthGeneratorSettings.DemSelection demSelection,
       boolean highResOcean,
       NormalizedElevationCache.TileBuilder builder
    ) {
-      NormalizedElevationTileKey key = NormalizedElevationTileKey.forProjectedMeters(projectedX, projectedZ, resolutionMeters, demSelection, highResOcean);
+      NormalizedElevationTileKey key = NormalizedElevationTileKey.forProjectedMeters(projectedX, projectedZ, resolutionMeters, highResOcean);
       double spacing = key.sampleResolutionMeters();
       double sampleX = projectedX / spacing;
       double sampleZ = projectedZ / spacing;
@@ -97,12 +95,11 @@ final class NormalizedElevationCache implements TellusCacheHandle {
       double maxProjectedX,
       double maxProjectedZ,
       double resolutionMeters,
-      EarthGeneratorSettings.DemSelection demSelection,
       boolean highResOcean,
       NormalizedElevationCache.TileBuilder builder
    ) {
       NormalizedElevationTileKey origin = NormalizedElevationTileKey.forProjectedMeters(
-         minProjectedX, minProjectedZ, resolutionMeters, demSelection, highResOcean
+         minProjectedX, minProjectedZ, resolutionMeters, highResOcean
       );
       int tileSpanMeters = origin.tileSpanMeters();
       int minTileX = Mth.floor(Math.min(minProjectedX, maxProjectedX) / tileSpanMeters);

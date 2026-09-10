@@ -1,0 +1,14 @@
+{
+    "required": false,
+    "minVersion": "0.8",
+    "package": "com.toweringheights.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "plugin": "com.toweringheights.mixin.TellusMixinPlugin",
+    "mixins": [
+        "TellusHeightLimitsMixin",
+        "TellusResolveHeightMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 0
+    }
+}

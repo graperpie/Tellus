@@ -18,6 +18,7 @@ import com.yucareux.tellus.world.realtime.TellusRealtimeState;
 import com.yucareux.tellus.worldgen.EarthBiomeSource;
 import com.yucareux.tellus.worldgen.EarthChunkGenerator;
 import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
+import com.yucareux.tellus.worldgen.ExperimentalHeightSupport;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -203,6 +204,7 @@ public class Tellus implements ModInitializer {
                BlockPos spawn = Objects.requireNonNull(earthGenerator.getSpawnPosition(world), "spawnPosition");
                world.setRespawnData(RespawnData.of(world.dimension(), spawn, 0.0F, 0.0F));
                ensureDynamicDimensionPack(server, world.dimensionTypeRegistration(), world.dimensionType(), earthGenerator);
+               ExperimentalHeightSupport.configureWorldBorder(earthGenerator.settings(), world.getWorldBorder());
             }
          }
       }));

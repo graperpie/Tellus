@@ -5,7 +5,7 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.yucareux.tellus.Tellus;
 import com.yucareux.tellus.mixin.client.GuiGraphicsAccessor;
 import com.yucareux.tellus.world.data.cover.TellusLandCoverSource;
-import com.yucareux.tellus.world.data.elevation.TellusElevationSource;
+import com.yucareux.tellus.world.data.elevation.GegyElevationSource;
 import com.yucareux.tellus.world.data.elevation.TellusElevationSource.DemUsage;
 import com.yucareux.tellus.world.data.elevation.TellusElevationSource.ElevationDiagnostic;
 import com.yucareux.tellus.world.data.koppen.TellusKoppenSource;
@@ -95,7 +95,6 @@ public final class TerrainPreview implements AutoCloseable {
    private static final double PREVIEW_INLAND_WATER_DEPTH_BLOCKS = 6.0;
    private static final int BUILDING_PREVIEW_COLOR = 10000536;
    private static final Vector3f LIGHT_DIR = new Vector3f(-0.4F, 0.8F, -0.4F).normalize();
-   private final TellusElevationSource elevationSource = new TellusElevationSource();
    private final TellusLandCoverSource landCoverSource = new TellusLandCoverSource();
    private final TellusKoppenSource koppenSource = new TellusKoppenSource();
    private final TellusLandMaskSource landMaskSource = new TellusLandMaskSource();
@@ -230,10 +229,10 @@ public final class TerrainPreview implements AutoCloseable {
       long coverDownloadUnits = (long)coverSize * coverSize * (useVisualCover ? 2L : 1L);
       long downloadTotal = (long)size * size + coverDownloadUnits + (long)climateSize * climateSize;
       boolean waterPreviewEnabled = settings.enableWater() && worldScale > 0.0 && this.osmWaterSource.available();
-      boolean remaSnowEnabled = TellusElevationSource.usesPolarDem(settings.demSelection()) && worldScale > 0.0;
-      double remaSnowBoundaryZ = remaSnowEnabled ? TellusElevationSource.remaBoundaryBlockZ(worldScale) : Double.POSITIVE_INFINITY;
+      boolean remaSnowEnabled = false;
+      double remaSnowBoundaryZ = Double.POSITIVE_INFINITY;
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double centerX = settings.spawnLongitude() * blocksPerDegree;
+      double centerX = EarthProjection.lonToBlockX(settings.spawnLongitude(), worldScale);
       double centerZ = EarthProjection.latToBlockZ(settings.spawnLatitude(), worldScale);
       double radius = PREVIEW_RADIUS_BLOCKS;
       double step = radius * 2.0 / (size - 1);
@@ -242,7 +241,7 @@ public final class TerrainPreview implements AutoCloseable {
       double minWorldZ = centerZ - radius;
       double maxWorldX = centerX + radius;
       double maxWorldZ = centerZ + radius;
-      this.queueBasePreviewPrefetch(centerX, centerZ, worldScale, settings.demSelection());
+      this.queueBasePreviewPrefetch(centerX, centerZ, settings);
       this.queueOsmPreviewPrefetch(centerX, centerZ, worldScale, minWorldX, minWorldZ, maxWorldX, maxWorldZ, waterPreviewEnabled, roadsPreviewEnabled, buildingsPreviewEnabled);
 
       TerrainPreview.DownloadNetworkTracker downloadTracker = new TerrainPreview.DownloadNetworkTracker();
@@ -270,14 +269,7 @@ public final class TerrainPreview implements AutoCloseable {
                double blockX = centerX - radius + x * step;
                int idx = x + z * size;
                boolean oceanZoom = this.useOceanZoom(blockX, blockZ, worldScale);
-               double elevation = this.elevationSource.samplePreviewElevationMeters(
-                  blockX,
-                  blockZ,
-                  worldScale,
-                  oceanZoom,
-                  settings.demSelection(),
-                  previewResolutionMeters
-               );
+               double elevation = GegyElevationSource.forSettings(settings).sampleMeters(blockX, blockZ);
                if (this.shouldAbortRequest(id)) {
                   return null;
                }
@@ -559,7 +551,6 @@ public final class TerrainPreview implements AutoCloseable {
          settings.heightOffset(),
          settings.spawnLatitude(),
          settings.spawnLongitude(),
-         settings.demSelection(),
          size,
          coverStride,
          coverSize,
@@ -597,8 +588,8 @@ public final class TerrainPreview implements AutoCloseable {
       boolean roadsPreviewEnabled = settings.enableRoads() && worldScale > 0.0 && worldScale <= 15.0;
       boolean buildingsPreviewEnabled = settings.enableBuildings() && worldScale > 0.0 && worldScale <= 15.0 && this.osmBuildingSource.available();
       boolean waterPreviewEnabled = settings.enableWater() && worldScale > 0.0 && this.osmWaterSource.available();
-      boolean remaSnowEnabled = TellusElevationSource.usesPolarDem(settings.demSelection()) && worldScale > 0.0;
-      double remaSnowBoundaryZ = remaSnowEnabled ? TellusElevationSource.remaBoundaryBlockZ(worldScale) : Double.POSITIVE_INFINITY;
+      boolean remaSnowEnabled = false;
+      double remaSnowBoundaryZ = Double.POSITIVE_INFINITY;
       this.queueOsmPreviewPrefetch(
          snapshot.centerX(),
          snapshot.centerZ(),
@@ -773,17 +764,17 @@ public final class TerrainPreview implements AutoCloseable {
          && Double.compare(snapshot.oceanicHeightScale(), settings.oceanicHeightScale()) == 0
          && snapshot.heightOffset() == settings.heightOffset()
          && Double.compare(snapshot.spawnLatitude(), settings.spawnLatitude()) == 0
-         && Double.compare(snapshot.spawnLongitude(), settings.spawnLongitude()) == 0
-         && snapshot.demSelection().equals(settings.demSelection());
+         && Double.compare(snapshot.spawnLongitude(), settings.spawnLongitude()) == 0;
    }
 
    private void queueBasePreviewPrefetch(
-      double centerX, double centerZ, double worldScale, EarthGeneratorSettings.DemSelection demSelection
+      double centerX, double centerZ, EarthGeneratorSettings settings
    ) {
+      double worldScale = settings.worldScale();
       if (worldScale > 0.0) {
          Util.backgroundExecutor().execute(() -> {
             try {
-               this.elevationSource.prefetchTiles(centerX, centerZ, worldScale, PREVIEW_ELEVATION_PREFETCH_RADIUS, demSelection);
+               GegyElevationSource.forSettings(settings).prefetch(centerX, centerZ, PREVIEW_ELEVATION_PREFETCH_RADIUS);
             } catch (RuntimeException ignored) {
             }
          });
@@ -866,13 +857,12 @@ public final class TerrainPreview implements AutoCloseable {
          for (int x = 0; x < providerGridSize; x++) {
             double blockX = centerX - radius + x * providerStep;
             boolean oceanZoom = this.useOceanZoom(blockX, blockZ, settings.worldScale());
-            ElevationDiagnostic diagnostic = this.elevationSource.samplePreviewDiagnostic(
-               blockX,
-               blockZ,
-               settings.worldScale(),
-               oceanZoom,
-               settings.demSelection(),
-               previewResolutionMeters
+            double previewElevation = GegyElevationSource.forSettings(settings).sampleMeters(blockX, blockZ);
+            ElevationDiagnostic diagnostic = new ElevationDiagnostic(
+               previewElevation,
+               DemUsage.TERRAIN_TILES,
+               DemUsage.TERRAIN_TILES.bit(),
+               DemUsage.TERRAIN_TILES.nominalResolutionMeters()
             );
             if (this.shouldAbortRequest(id)) {
                return null;
@@ -1434,7 +1424,7 @@ public final class TerrainPreview implements AutoCloseable {
          double worldZ = minWorldZ + i * step;
          sampleWorldX[i] = worldX;
          sampleWorldZ[i] = worldZ;
-         sampleLon[i] = worldX / blocksPerDegree;
+         sampleLon[i] = EarthProjection.blockXToLon(worldX, worldScale);
          sampleLat[i] = EarthProjection.blockZToLat(worldZ, worldScale);
       }
 
@@ -1829,7 +1819,7 @@ public final class TerrainPreview implements AutoCloseable {
                double[] worldZ = new double[points];
 
                for (int i = 0; i < points; i++) {
-                  worldX[i] = road.lonAt(i) * blocksPerDegree;
+                  worldX[i] = EarthProjection.lonToBlockX(road.lonAt(i), worldScale);
                   worldZ[i] = EarthProjection.latToBlockZ(road.latAt(i), worldScale);
                }
 
@@ -1960,8 +1950,8 @@ public final class TerrainPreview implements AutoCloseable {
       int size,
       byte[] waterKind
    ) {
-      double minBlockX = feature.minLon() * blocksPerDegree;
-      double maxBlockX = feature.maxLon() * blocksPerDegree;
+      double minBlockX = EarthProjection.lonToBlockX(feature.minLon(), worldScale);
+      double maxBlockX = EarthProjection.lonToBlockX(feature.maxLon(), worldScale);
       double z0 = EarthProjection.latToBlockZ(feature.minLat(), worldScale);
       double z1 = EarthProjection.latToBlockZ(feature.maxLat(), worldScale);
       double minBlockZ = Math.min(z0, z1);
@@ -2028,7 +2018,7 @@ public final class TerrainPreview implements AutoCloseable {
                return false;
             }
 
-            double currentX = feature.lonAt(part, point) * blocksPerDegree;
+            double currentX = EarthProjection.lonToBlockX(feature.lonAt(part, point), worldScale);
             double currentZ = EarthProjection.latToBlockZ(feature.latAt(part, point), worldScale);
             double dx = currentX - previousX;
             double dz = currentZ - previousZ;
@@ -2604,7 +2594,6 @@ public final class TerrainPreview implements AutoCloseable {
       int heightOffset,
       double spawnLatitude,
       double spawnLongitude,
-      EarthGeneratorSettings.DemSelection demSelection,
       int size,
       int coverStride,
       int coverSize,
@@ -2629,7 +2618,6 @@ public final class TerrainPreview implements AutoCloseable {
       TerrainPreview.PreviewInfo info
    ) {
       private PreviewBaseSnapshot {
-         demSelection = Objects.requireNonNull(demSelection, "demSelection");
          info = Objects.requireNonNull(info, "info");
       }
    }
@@ -3122,3 +3110,4 @@ public final class TerrainPreview implements AutoCloseable {
       }
    }
 }
+

@@ -1,6 +1,5 @@
 package com.yucareux.tellus.world.data.elevation;
 
-import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import net.minecraft.util.Mth;
 
 record NormalizedElevationTileKey(
@@ -14,7 +13,7 @@ record NormalizedElevationTileKey(
    static final int MAX_LOD = 17;
 
    NormalizedElevationTileKey {
-      demSelectionMask = EarthGeneratorSettings.DemSelection.manual(demSelectionMask).enabledProviderMask();
+      demSelectionMask = 1;
       if (lod < 0 || lod > MAX_LOD) {
          throw new IllegalArgumentException("Invalid normalized elevation LOD " + lod);
       }
@@ -24,14 +23,13 @@ record NormalizedElevationTileKey(
       double projectedX,
       double projectedZ,
       double resolutionMeters,
-      EarthGeneratorSettings.DemSelection demSelection,
       boolean highResOcean
    ) {
       int lod = lodForResolutionMeters(resolutionMeters);
       int tileSpanMeters = tileSpanMeters(lod);
       int tileX = Mth.floor(projectedX / tileSpanMeters);
       int tileZ = Mth.floor(projectedZ / tileSpanMeters);
-      return new NormalizedElevationTileKey(demSelection.enabledProviderMask(), highResOcean, lod, tileX, tileZ);
+      return new NormalizedElevationTileKey(1, highResOcean, lod, tileX, tileZ);
    }
 
    static NormalizedElevationTileKey forBlockCoordinates(
@@ -39,10 +37,9 @@ record NormalizedElevationTileKey(
       double blockZ,
       double worldScale,
       double resolutionMeters,
-      EarthGeneratorSettings.DemSelection demSelection,
       boolean highResOcean
    ) {
-      return forProjectedMeters(blockX * worldScale, blockZ * worldScale, resolutionMeters, demSelection, highResOcean);
+      return forProjectedMeters(blockX * worldScale, blockZ * worldScale, resolutionMeters, highResOcean);
    }
 
    static int lodForResolutionMeters(double resolutionMeters) {
@@ -83,12 +80,8 @@ record NormalizedElevationTileKey(
       return this.minProjectedZ() + localZ * this.sampleResolutionMeters();
    }
 
-   EarthGeneratorSettings.DemSelection demSelection() {
-      return EarthGeneratorSettings.DemSelection.manual(this.demSelectionMask);
-   }
-
    String demSelectionFingerprint() {
-      return this.demSelection().fingerprint();
+      return "mask_1";
    }
 
    NormalizedElevationTileKey withTile(int tileX, int tileZ) {

@@ -2,7 +2,7 @@ package com.yucareux.tellus.worldgen;
 
 import com.yucareux.tellus.Tellus;
 import com.yucareux.tellus.world.data.cover.TellusLandCoverSource;
-import com.yucareux.tellus.world.data.elevation.TellusElevationSource;
+import com.yucareux.tellus.world.data.elevation.GegyElevationSource;
 import com.yucareux.tellus.world.data.koppen.TellusKoppenSource;
 import com.yucareux.tellus.world.data.mask.TellusLandMaskSource;
 import com.yucareux.tellus.world.data.osm.TellusOsmBuildingSource;
@@ -29,7 +29,6 @@ import net.minecraft.world.level.ChunkPos;
 public final class TellusWorldgenSources {
    private static final TellusLandCoverSource LAND_COVER = new TellusLandCoverSource();
    private static final TellusLandMaskSource LAND_MASK = new TellusLandMaskSource();
-   private static final TellusElevationSource ELEVATION = new TellusElevationSource();
    private static final TellusKoppenSource KOPPEN = new TellusKoppenSource();
    private static final TellusOsmRoadSource OSM_ROADS = new TellusOsmRoadSource();
    private static final TellusOsmBuildingSource OSM_BUILDINGS = new TellusOsmBuildingSource();
@@ -54,10 +53,6 @@ public final class TellusWorldgenSources {
 
    static TellusLandCoverSource landCover() {
       return LAND_COVER;
-   }
-
-   static TellusElevationSource elevation() {
-      return ELEVATION;
    }
 
    static TellusKoppenSource koppen() {
@@ -86,7 +81,7 @@ public final class TellusWorldgenSources {
 
    static WaterSurfaceResolver waterResolver(EarthGeneratorSettings settings) {
       Objects.requireNonNull(settings, "settings");
-      WaterSurfaceResolver resolver = WATER_RESOLVERS.computeIfAbsent(settings, value -> new WaterSurfaceResolver(LAND_COVER, LAND_MASK, ELEVATION, value));
+      WaterSurfaceResolver resolver = WATER_RESOLVERS.computeIfAbsent(settings, value -> new WaterSurfaceResolver(LAND_COVER, LAND_MASK, GegyElevationSource.forSettings(value), value));
       return Objects.requireNonNull(resolver, "waterResolver");
    }
 
@@ -102,7 +97,7 @@ public final class TellusWorldgenSources {
       );
       futures.add(
          submitCriticalWarmup(
-            () -> ELEVATION.prefetchTiles(centerX, centerZ, worldScale, Math.max(0, ELEVATION_PREFETCH_RADIUS), settings.demSelection(), previewResolutionMeters)
+            () -> GegyElevationSource.forSettings(settings).prefetch(centerX, centerZ, Math.max(0, ELEVATION_PREFETCH_RADIUS))
          )
       );
       futures.add(submitCriticalWarmup(() -> LAND_MASK.prefetchTiles(centerX, centerZ, worldScale, Math.max(1, LAND_MASK_PREFETCH_RADIUS))));
@@ -178,7 +173,7 @@ public final class TellusWorldgenSources {
 
          if (ELEVATION_PREFETCH_RADIUS > 0) {
             submitPrefetch(
-               () -> ELEVATION.prefetchTiles(centerX, centerZ, worldScale, ELEVATION_PREFETCH_RADIUS, settings.demSelection(), previewResolutionMeters),
+               () -> GegyElevationSource.forSettings(settings).prefetch(centerX, centerZ, ELEVATION_PREFETCH_RADIUS),
                allowInlineExecution
             );
          }

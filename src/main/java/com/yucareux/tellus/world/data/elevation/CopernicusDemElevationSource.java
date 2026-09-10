@@ -57,7 +57,7 @@ public final class CopernicusDemElevationSource implements TellusCacheHandle {
          return Double.NaN;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.sampleElevationMeters(lat, lon);
       }
@@ -68,7 +68,7 @@ public final class CopernicusDemElevationSource implements TellusCacheHandle {
          return Double.NaN;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.sampleElevationMetersLocalOnly(lat, lon);
       }
@@ -99,7 +99,7 @@ public final class CopernicusDemElevationSource implements TellusCacheHandle {
    public void prefetchTiles(double blockX, double blockZ, double worldScale, int radius) {
       if (!(worldScale <= 0.0) && radius > 0) {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
 
          CopernicusDemElevationSource.TileKey center30 = tileKeyForLatLon(CopernicusDemElevationSource.Level.GLO_30, lat, lon);
@@ -989,3 +989,4 @@ public final class CopernicusDemElevationSource implements TellusCacheHandle {
       }
    }
 }
+

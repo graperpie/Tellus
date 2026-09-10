@@ -1,0 +1,29 @@
+{
+    "schemaVersion": 1,
+    "id": "toweringheights",
+    "version": "0.1.2",
+    "name": "ToweringHeights",
+    "description": "Extends Minecraft world height to ±10,000 blocks",
+    "authors": ["ToweringHeights Team"],
+    "license": "MIT",
+    "icon": "",
+    "environment": "*",
+    "entrypoints": {
+        "main": ["com.toweringheights.ToweringHeightsMod"],
+        "client": ["com.toweringheights.client.ToweringHeightsClient"]
+    },
+    "mixins": [
+        "toweringheights.mixins.json",
+        "toweringheights.tellus.mixins.json",
+        {
+            "config": "toweringheights.client.mixins.json",
+            "environment": "client"
+        }
+    ],
+    "depends": {
+        "fabricloader": ">=0.18.1",
+        "minecraft": "~1.21.11",
+        "java": ">=21",
+        "fabric-api": "*"
+    }
+}

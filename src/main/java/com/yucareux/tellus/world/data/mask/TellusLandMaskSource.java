@@ -68,7 +68,7 @@ public final class TellusLandMaskSource {
    private TellusLandMaskSource.LandMaskSample sampleLandMask(double blockX, double blockZ, double worldScale, boolean localOnly) {
       if (this.available && !(worldScale <= 0.0)) {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          if (!(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON)) {
             int zoom = this.selectZoom(worldScale);
@@ -172,7 +172,7 @@ public final class TellusLandMaskSource {
 
    private static TellusLandMaskSource.TileKey tileKeyForBlock(double blockX, double blockZ, double worldScale, int zoom) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       return tileKeyForLonLat(lon, lat, zoom);
    }
@@ -266,3 +266,4 @@ public final class TellusLandMaskSource {
    private record TileKey(int zoom, int x, int y) {
    }
 }
+

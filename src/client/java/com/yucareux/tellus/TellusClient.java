@@ -1,12 +1,15 @@
 package com.yucareux.tellus;
 
 import com.yucareux.tellus.client.screen.EarthTeleportScreen;
+import com.yucareux.tellus.integration.meridian.MeridianClientIntegration;
+import com.yucareux.tellus.integration.meridian.MeridianIntegration;
 import com.yucareux.tellus.network.GeoTpOpenMapPayload;
 import com.yucareux.tellus.network.TellusWeatherPayload;
 import com.yucareux.tellus.world.realtime.SnowGrid;
 import com.yucareux.tellus.world.realtime.TellusRealtimeState;
 import java.util.Objects;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -36,5 +39,9 @@ public class TellusClient implements ClientModInitializer {
             )
       );
       ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> TellusRealtimeState.clearRealtimeWeather());
+
+      if (FabricLoader.getInstance().isModLoaded(MeridianIntegration.MOD_ID)) {
+         MeridianClientIntegration.bootstrap();
+      }
    }
 }

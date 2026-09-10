@@ -1,0 +1,18 @@
+{
+    "required": true,
+    "minVersion": "0.8",
+    "package": "com.toweringheights.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "mixins": [
+        "BlockPosMixin",
+        "ChunkPosMixin",
+        "ChunkSerializerMixin",
+        "DimensionTypeMixin",
+        "WorldBorderMixin",
+        "HeightmapOptMixin",
+        "BiomeFillOptMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

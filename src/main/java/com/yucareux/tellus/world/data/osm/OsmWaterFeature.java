@@ -109,7 +109,7 @@ public final class OsmWaterFeature {
          return this.touchesBlockLine(blockX, blockZ, worldScale);
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.containsLonLat(lon, lat);
       }
@@ -155,9 +155,9 @@ public final class OsmWaterFeature {
          double[] latPart = this.latitudes[part];
 
          for (int point = 1; point < lonPart.length; point++) {
-            double startX = lonPart[point - 1] * blocksPerDegree;
+            double startX = EarthProjection.lonToBlockX(lonPart[point - 1], worldScale);
             double startZ = EarthProjection.latToBlockZ(latPart[point - 1], worldScale);
-            double endX = lonPart[point] * blocksPerDegree;
+            double endX = EarthProjection.lonToBlockX(lonPart[point], worldScale);
             double endZ = EarthProjection.latToBlockZ(latPart[point], worldScale);
             if (distanceToSegmentSq(queryX, queryZ, startX, startZ, endX, endZ) <= maxDistanceSq) {
                return true;
@@ -197,3 +197,4 @@ public final class OsmWaterFeature {
       return copy;
    }
 }
+

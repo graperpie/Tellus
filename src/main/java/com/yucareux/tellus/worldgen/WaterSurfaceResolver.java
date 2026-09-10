@@ -4,7 +4,7 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.yucareux.tellus.Tellus;
 import com.yucareux.tellus.world.data.cover.TellusLandCoverSource;
-import com.yucareux.tellus.world.data.elevation.TellusElevationSource;
+import com.yucareux.tellus.world.data.elevation.GegyElevationSource;
 import com.yucareux.tellus.world.data.mask.TellusLandMaskSource;
 import com.yucareux.tellus.world.data.osm.OsmPerf;
 import com.yucareux.tellus.world.data.osm.OsmQueryMode;
@@ -73,7 +73,7 @@ public final class WaterSurfaceResolver {
    private static final ThreadLocal<WaterSurfaceResolver.RegionScratch> REGION_SCRATCH = ThreadLocal.withInitial(WaterSurfaceResolver.RegionScratch::new);
    private final TellusLandCoverSource landCoverSource;
    private final TellusLandMaskSource landMaskSource;
-   private final TellusElevationSource elevationSource;
+   private final GegyElevationSource elevationSource;
    private final TellusOsmWaterSource osmWaterSource;
    private final EarthGeneratorSettings settings;
    private final boolean osmWaterEnabled;
@@ -95,7 +95,7 @@ public final class WaterSurfaceResolver {
    public WaterSurfaceResolver(
       TellusLandCoverSource landCoverSource,
       TellusLandMaskSource landMaskSource,
-      TellusElevationSource elevationSource,
+      GegyElevationSource elevationSource,
       EarthGeneratorSettings settings
    ) {
       this.landCoverSource = landCoverSource;
@@ -1109,7 +1109,7 @@ public final class WaterSurfaceResolver {
          partZs[part] = new double[points];
 
          for (int point = 0; point < points; point++) {
-            double worldX = feature.lonAt(part, point) * blocksPerDegree;
+            double worldX = EarthProjection.lonToBlockX(feature.lonAt(part, point), this.settings.worldScale());
             double worldZ = EarthProjection.latToBlockZ(feature.latAt(part, point), this.settings.worldScale());
             partXs[part][point] = worldX;
             partZs[part][point] = worldZ;
@@ -1673,9 +1673,7 @@ public final class WaterSurfaceResolver {
    }
 
    private int sampleSurfaceHeight(double blockX, double blockZ, boolean oceanZoom, double previewResolutionMeters) {
-      double elevation = this.elevationSource.samplePreviewElevationMeters(
-         blockX, blockZ, this.settings.worldScale(), oceanZoom, this.settings.demSelection(), previewResolutionMeters
-      );
+      double elevation = this.elevationSource.sampleMeters(blockX, blockZ);
       double heightScale = elevation >= 0.0 ? this.settings.terrestrialHeightScale() : this.settings.oceanicHeightScale();
       double scaled = elevation * heightScale / this.settings.worldScale();
       int offset = this.settings.heightOffset();
@@ -2142,3 +2140,4 @@ public final class WaterSurfaceResolver {
       }
    }
 }
+

@@ -487,7 +487,7 @@ public final class JapanGsiElevationSource implements TellusCacheHandle {
 
    private static JapanGsiElevationSource.LatLon toLatLon(double blockX, double blockZ, double worldScale) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 ? new JapanGsiElevationSource.LatLon(lat, lon) : null;
    }
@@ -606,3 +606,4 @@ public final class JapanGsiElevationSource implements TellusCacheHandle {
       }
    }
 }
+

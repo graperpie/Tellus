@@ -7,9 +7,7 @@ import com.yucareux.tellus.cache.TellusCacheDomain;
 import com.yucareux.tellus.cache.TellusCacheHandle;
 import com.yucareux.tellus.cache.TellusCacheRegistry;
 import com.yucareux.tellus.Tellus;
-import com.yucareux.tellus.world.data.mask.TellusLandMaskSource;
 import com.yucareux.tellus.world.data.source.DownloadProgressReporter;
-import com.yucareux.tellus.worldgen.EarthGeneratorSettings;
 import com.yucareux.tellus.worldgen.EarthProjection;
 import com.yucareux.tellus.worldgen.TellusWorldgenSources;
 import java.awt.image.BufferedImage;
@@ -29,12 +27,6 @@ import net.minecraft.util.Mth;
 
 public final class TellusElevationSource implements TellusCacheHandle {
    private static final double EQUATOR_CIRCUMFERENCE = 4.0075017E7;
-   private static final double[] USGS_PREFERRED_MEXICO_LONS = new double[]{
-      -117.2, -114.5, -111.1, -107.0, -103.5, -100.8, -97.8, -95.0, -92.0, -90.7, -91.1, -92.4, -94.9, -97.4, -100.6, -104.4, -108.9, -113.8, -117.2
-   };
-   private static final double[] USGS_PREFERRED_MEXICO_LATS = new double[]{
-      32.7, 31.5, 31.3, 31.9, 29.9, 27.8, 25.8, 24.3, 18.6, 19.3, 21.7, 16.2, 15.5, 17.2, 20.2, 23.0, 26.2, 29.4, 32.7
-   };
    private static final int TILE_SIZE = 256;
    private static final int MIN_ZOOM = 0;
    private static final int LAND_MAX_ZOOM = 15;
@@ -43,37 +35,13 @@ public final class TellusElevationSource implements TellusCacheHandle {
    private static final double MAX_LAT = 85.05112878;
    private static final double MIN_LON = -180.0;
    private static final double MAX_LON = 180.0;
-   private static final double POLAR_NORTH_MIN_LAT = 60.0;
-   private static final double POLAR_SOUTH_MAX_LAT = -60.0;
    private static final double RESOLUTION_METERS = 30.0;
    private static final String ENDPOINT = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
    private static final int MAX_CACHE_TILES = intProperty("tellus.elevation.cacheTiles", 512);
-   // The normalized cache currently incurs a very expensive first-build path on cache misses.
-   // Keep it opt-in until the ingest/build cost is low enough for preview and spawn-time terrain reads.
-   private static final boolean NORMALIZED_ENABLED = booleanProperty("tellus.elevation.normalized.enabled", false);
-   private static final boolean NORMALIZED_COMPARE = booleanProperty("tellus.elevation.normalized.compare", false);
-   private static final int NORMALIZED_COMPARE_LOG_LIMIT = intProperty("tellus.elevation.normalized.compareLogLimit", 100);
-   private static final boolean DEBUG_DEM = Boolean.getBoolean("tellus.debug.dem");
    private static final ShortRaster MISSING_RASTER = ShortRaster.create(1, 1);
-   private static final NormalizedElevationCache NORMALIZED_CACHE = NORMALIZED_ENABLED ? new NormalizedElevationCache() : null;
-   private static final AtomicInteger NORMALIZED_COMPARE_LOGGED = new AtomicInteger();
    private final Path cacheRoot;
    private final LoadingCache<TellusElevationSource.TileKey, ShortRaster> cache;
-   private final ArcticDemElevationSource arcticDem = new ArcticDemElevationSource();
-   private final RemaElevationSource rema = new RemaElevationSource();
-   private final SwissAlti3dElevationSource swissAlti3d = new SwissAlti3dElevationSource();
-   private final AhnElevationSource ahn = new AhnElevationSource();
-   private final CanElevationSource canElevation = new CanElevationSource();
-   private final NorwayDtm1ElevationSource norwayDtm1 = new NorwayDtm1ElevationSource();
-   private final JapanGsiElevationSource japanGsi = new JapanGsiElevationSource();
-   private final Usgs3depElevationSource usgs = new Usgs3depElevationSource();
-   private final CopernicusDemElevationSource copernicus = new CopernicusDemElevationSource();
    private final TerrainTilesResolutionIndex terrainResolutionIndex = TerrainTilesResolutionIndex.create();
-   private final TerrainTilesQualityMask terrainBetterThanUsgsMask = TerrainTilesQualityMask.create(
-      "/tellus/elevation/terrain_tiles_better_than_usgs_mask.bin.xz"
-   );
-   private final TellusLandMaskSource landMask = TellusWorldgenSources.landMask();
-   private volatile EarthGeneratorSettings.DemSelection lastLoggedSelection;
 
    public TellusElevationSource() {
       this.cacheRoot = FabricLoader.getInstance().getGameDir().resolve("tellus/cache/elevation-tellus");
@@ -86,21 +54,11 @@ public final class TellusElevationSource implements TellusCacheHandle {
    }
 
    public double sampleElevationMeters(double blockX, double blockZ, double worldScale) {
-      return this.sampleElevationMeters(blockX, blockZ, worldScale, true, EarthGeneratorSettings.DEFAULT.demSelection());
+      return this.sampleElevationMeters(blockX, blockZ, worldScale, true, worldScale);
    }
 
    public double sampleElevationMeters(double blockX, double blockZ, double worldScale, boolean highResOcean) {
-      return this.sampleElevationMeters(blockX, blockZ, worldScale, highResOcean, EarthGeneratorSettings.DEFAULT.demSelection());
-   }
-
-   public double sampleElevationMeters(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection
-   ) {
-      return this.sampleElevationMeters(blockX, blockZ, worldScale, highResOcean, demSelection, worldScale);
+      return this.sampleElevationMeters(blockX, blockZ, worldScale, highResOcean, worldScale);
    }
 
    public double samplePreviewElevationMeters(
@@ -108,10 +66,9 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
-      return this.sampleElevationMeters(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
+      return this.sampleElevationMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
    }
 
    public double samplePreviewElevationMetersLocalOnly(
@@ -119,13 +76,12 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
       if (worldScale <= 0.0) {
          return 0.0;
       } else {
-         return this.sampleElevationMetersFromProvidersLocalOnly(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
+         return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
       }
    }
 
@@ -134,13 +90,12 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
       if (worldScale <= 0.0) {
          return Double.NaN;
       } else {
-         return this.sampleElevationMetersFromProvidersMemoryOnly(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
+         return this.sampleTerrariumMetersMemoryOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
       }
    }
 
@@ -155,178 +110,19 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
       if (worldScale <= 0.0) {
          return 0.0;
       } else {
-         if (DEBUG_DEM && !Objects.equals(demSelection, this.lastLoggedSelection)) {
-            this.lastLoggedSelection = demSelection;
-            Tellus.LOGGER.info(
-               "DEM selection set to automatic={} providers={}.",
-               demSelection.automatic(),
-               String.join(",", demSelection.enabledProviderIds())
-            );
-         }
-
-         if (NORMALIZED_ENABLED) {
-            try {
-               TellusElevationSource.ElevationDiagnostic normalized = this.sampleDiagnosticFromNormalizedCache(
-                  blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters
-               );
-               this.compareNormalizedElevation(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters, normalized.elevation());
-               return normalized.elevation();
-            } catch (RuntimeException error) {
-               Tellus.LOGGER.debug("Falling back to direct DEM sampling for normalized cache miss at {},{}", blockX, blockZ, error);
-            }
-         }
-
-         return this.sampleElevationMetersFromProviders(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
+         return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
       }
    }
 
-   private double sampleElevationMetersFromProviders(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      return demSelection.isAllEnabled()
-         ? this.sampleElevationMetersFromLegacyProvider(
-            blockX, blockZ, worldScale, highResOcean, EarthGeneratorSettings.DemProvider.AUTO, previewResolutionMeters
-         )
-         : this.sampleFilteredElevationMeters(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private double sampleElevationMetersFromProvidersLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      return demSelection.isAllEnabled()
-         ? this.sampleElevationMetersFromLegacyProviderLocalOnly(
-            blockX, blockZ, worldScale, highResOcean, EarthGeneratorSettings.DemProvider.AUTO, previewResolutionMeters
-         )
-         : this.sampleFilteredElevationMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private double sampleElevationMetersFromProvidersMemoryOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      return this.sampleTerrariumMetersMemoryOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-   }
-
-   private double sampleElevationMetersFromLegacyProvider(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemProvider demProvider,
-      double previewResolutionMeters
-   ) {
-      return switch (demProvider) {
-            case AUTO -> this.sampleAutomaticMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            case SWISSALTI3D -> {
-               SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield swiss.usable() ? swiss.elevation() : this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case AHN -> {
-               AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-               yield ahn.usable() ? ahn.elevation() : this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case CANELEVATION -> {
-               CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield canada.usable() ? canada.elevation() : this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case NORWAYDTM1 -> {
-               NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield norway.usable() ? norway.elevation() : this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case JAPANGSI -> {
-               JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield japan.usable()
-                  ? japan.elevation()
-                  : this.sampleAutomaticMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, false);
-            }
-            case USGS -> this.sampleUsgsMetersWithFallback(blockX, blockZ, worldScale, highResOcean);
-            case COPERNICUS -> this.sampleCopernicusPreferredMeters(blockX, blockZ, worldScale, highResOcean);
-            case ARCTICDEM -> {
-               TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-               yield polar.usable() ? polar.elevation() : this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case TERRARIUM -> this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-         };
-   }
-
-   private double sampleElevationMetersFromLegacyProviderLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemProvider demProvider,
-      double previewResolutionMeters
-   ) {
-      return switch (demProvider) {
-            case AUTO -> this.sampleAutomaticMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            case SWISSALTI3D -> {
-               SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield swiss.usable()
-                  ? swiss.elevation()
-                  : this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case AHN -> {
-               AhnElevationSource.Sample ahn = this.ahn.sampleLocalOnly(blockX, blockZ, worldScale);
-               yield ahn.usable()
-                  ? ahn.elevation()
-                  : this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case CANELEVATION -> {
-               CanElevationSource.Sample canada = this.canElevation.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield canada.usable()
-                  ? canada.elevation()
-                  : this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case NORWAYDTM1 -> {
-               NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield norway.usable()
-                  ? norway.elevation()
-                  : this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case JAPANGSI -> {
-               JapanGsiElevationSource.Sample japan = this.japanGsi.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield japan.usable()
-                  ? japan.elevation()
-                  : this.sampleAutomaticMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, false);
-            }
-            case USGS -> this.sampleUsgsMetersWithFallbackLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            case COPERNICUS -> this.sampleCopernicusPreferredMetersLocalOnly(
-               blockX, blockZ, worldScale, highResOcean, previewResolutionMeters
-            );
-            case ARCTICDEM -> {
-               TellusElevationSource.PolarDemSample polar = this.samplePolarDemLocalOnly(blockX, blockZ, worldScale);
-               yield polar.usable()
-                  ? polar.elevation()
-                  : this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case TERRARIUM -> this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-         };
-   }
-
    public TellusElevationSource.ElevationDiagnostic sampleDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, EarthGeneratorSettings.DemSelection demSelection
+      double blockX, double blockZ, double worldScale, boolean highResOcean
    ) {
-      return this.sampleDiagnostic(blockX, blockZ, worldScale, highResOcean, demSelection, worldScale);
+      return this.sampleDiagnostic(blockX, blockZ, worldScale, highResOcean, worldScale);
    }
 
    public TellusElevationSource.ElevationDiagnostic samplePreviewDiagnostic(
@@ -334,10 +130,9 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
-      return this.sampleDiagnostic(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
+      return this.sampleDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
    }
 
    private TellusElevationSource.ElevationDiagnostic sampleDiagnostic(
@@ -345,410 +140,17 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
       if (worldScale <= 0.0) {
          return diagnostic(0.0, TellusElevationSource.DemUsage.TERRAIN_TILES);
       } else {
-         if (NORMALIZED_ENABLED) {
-            try {
-               TellusElevationSource.ElevationDiagnostic normalized = this.sampleDiagnosticFromNormalizedCache(
-                  blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters
-               );
-               this.compareNormalizedElevation(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters, normalized.elevation());
-               return normalized;
-            } catch (RuntimeException error) {
-               Tellus.LOGGER.debug("Falling back to direct DEM diagnostics for normalized cache miss at {},{}", blockX, blockZ, error);
-            }
-         }
-
-         return this.sampleDiagnosticFromProviders(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-      }
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleDiagnosticFromProviders(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      return demSelection.isAllEnabled()
-         ? this.sampleDiagnosticFromLegacyProvider(
-            blockX, blockZ, worldScale, highResOcean, EarthGeneratorSettings.DemProvider.AUTO, previewResolutionMeters
-         )
-         : this.sampleFilteredDiagnostic(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleDiagnosticFromLegacyProvider(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemProvider demProvider,
-      double previewResolutionMeters
-   ) {
-      return switch (demProvider) {
-            case AUTO -> this.sampleAutomaticDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            case SWISSALTI3D -> {
-               SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield swiss.usable()
-                  ? diagnostic(swiss.elevation(), swiss.usage(), swiss.usage().bit(), swiss.resolutionMeters())
-                  : this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case AHN -> {
-               AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-               yield ahn.usable()
-                  ? diagnostic(ahn.elevation(), ahn.usage(), ahn.usage().bit(), ahn.resolutionMeters())
-                  : this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case CANELEVATION -> {
-               CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield canada.usable()
-                  ? diagnostic(canada.elevation(), canada.usage(), canada.usage().bit(), canada.resolutionMeters())
-                  : this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case NORWAYDTM1 -> {
-               NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield norway.usable()
-                  ? diagnostic(norway.elevation(), norway.usage(), norway.usage().bit(), norway.resolutionMeters())
-                  : this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case JAPANGSI -> {
-               JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-               yield japan.usable()
-                  ? diagnostic(japan.elevation(), japan.usage(), japan.usage().bit(), japan.resolutionMeters())
-                  : this.sampleAutomaticDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, false);
-            }
-            case USGS -> this.sampleUsgsMetersWithFallbackDiagnostic(blockX, blockZ, worldScale, highResOcean);
-            case COPERNICUS -> this.sampleCopernicusPreferredDiagnostic(blockX, blockZ, worldScale, highResOcean);
-            case ARCTICDEM -> {
-               TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-               yield polar.usable()
-                  ? diagnostic(polar.elevation(), polar.usage())
-                  : this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-            }
-            case TERRARIUM -> this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-         };
-   }
-
-   private double sampleFilteredElevationMeters(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.SWISSALTI3D)) {
-         SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (swiss.usable()) {
-            return swiss.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.AHN)) {
-         AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-         if (ahn.usable()) {
-            return ahn.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.CANELEVATION)) {
-         CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (canada.usable()) {
-            return canada.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.NORWAYDTM1)) {
-         NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (norway.usable()) {
-            return norway.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.JAPANGSI)) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return japan.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.ARCTICDEM)) {
-         TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-         if (polar.usable()) {
-            return polar.elevation();
-         }
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecision(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.USGS)) {
-            double usgsSample = this.sampleUsgsPreferredMeters(blockX, blockZ, worldScale, highResOcean, decision.landMaskSample());
-            if (!Double.isNaN(usgsSample)) {
-               return usgsSample;
-            }
-         }
-
-         if (demSelection.copernicusEnabled()) {
-            double copernicusSample = this.sampleCopernicusPreferredMeters(
-               blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled()
-            );
-            if (!Double.isNaN(copernicusSample)) {
-               return copernicusSample;
-            }
-         }
-      } else if (decision.preferCopernicus() && demSelection.copernicusEnabled()) {
-         double copernicusSample = this.sampleCopernicusPreferredMeters(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled()
-         );
-         if (!Double.isNaN(copernicusSample)) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleFinalFallbackMeters(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private double sampleFilteredElevationMetersLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.SWISSALTI3D)) {
-         SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (swiss.usable()) {
-            return swiss.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.AHN)) {
-         AhnElevationSource.Sample ahn = this.ahn.sampleLocalOnly(blockX, blockZ, worldScale);
-         if (ahn.usable()) {
-            return ahn.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.CANELEVATION)) {
-         CanElevationSource.Sample canada = this.canElevation.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (canada.usable()) {
-            return canada.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.NORWAYDTM1)) {
-         NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (norway.usable()) {
-            return norway.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.JAPANGSI)) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return japan.elevation();
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.ARCTICDEM)) {
-         TellusElevationSource.PolarDemSample polar = this.samplePolarDemLocalOnly(blockX, blockZ, worldScale);
-         if (polar.usable()) {
-            return polar.elevation();
-         }
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecisionLocalOnly(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.USGS)) {
-            double usgsSample = this.sampleUsgsPreferredMetersLocalOnly(
-               blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), previewResolutionMeters
-            );
-            if (!Double.isNaN(usgsSample)) {
-               return usgsSample;
-            }
-         }
-
-         if (demSelection.copernicusEnabled()) {
-            double copernicusSample = this.sampleCopernicusPreferredMetersLocalOnly(
-               blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled(), previewResolutionMeters
-            );
-            if (!Double.isNaN(copernicusSample)) {
-               return copernicusSample;
-            }
-         }
-      } else if (decision.preferCopernicus() && demSelection.copernicusEnabled()) {
-         double copernicusSample = this.sampleCopernicusPreferredMetersLocalOnly(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled(), previewResolutionMeters
-         );
-         if (!Double.isNaN(copernicusSample)) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleFinalFallbackMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleFilteredDiagnostic(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.SWISSALTI3D)) {
-         SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (swiss.usable()) {
-            return diagnostic(swiss.elevation(), swiss.usage(), swiss.usage().bit(), swiss.resolutionMeters());
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.AHN)) {
-         AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-         if (ahn.usable()) {
-            return diagnostic(ahn.elevation(), ahn.usage(), ahn.usage().bit(), ahn.resolutionMeters());
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.CANELEVATION)) {
-         CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (canada.usable()) {
-            return diagnostic(canada.elevation(), canada.usage(), canada.usage().bit(), canada.resolutionMeters());
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.NORWAYDTM1)) {
-         NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (norway.usable()) {
-            return diagnostic(norway.elevation(), norway.usage(), norway.usage().bit(), norway.resolutionMeters());
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.JAPANGSI)) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return diagnostic(japan.elevation(), japan.usage(), japan.usage().bit(), japan.resolutionMeters());
-         }
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.ARCTICDEM)) {
-         TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-         if (polar.usable()) {
-            return diagnostic(polar.elevation(), polar.usage());
-         }
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecision(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.USGS)) {
-            TellusElevationSource.ElevationDiagnostic usgsSample = this.sampleUsgsPreferredDiagnostic(
-               blockX, blockZ, worldScale, highResOcean, decision.landMaskSample()
-            );
-            if (!Double.isNaN(usgsSample.elevation())) {
-               return usgsSample;
-            }
-         }
-
-         if (demSelection.copernicusEnabled()) {
-            TellusElevationSource.ElevationDiagnostic copernicusSample = this.sampleCopernicusPreferredDiagnostic(
-               blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled()
-            );
-            if (!Double.isNaN(copernicusSample.elevation())) {
-               return copernicusSample;
-            }
-         }
-      } else if (decision.preferCopernicus() && demSelection.copernicusEnabled()) {
-         TellusElevationSource.ElevationDiagnostic copernicusSample = this.sampleCopernicusPreferredDiagnostic(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), demSelection.terrainTilesEnabled()
-         );
-         if (!Double.isNaN(copernicusSample.elevation())) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleFinalFallbackDiagnostic(blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters);
-   }
-
-   private double sampleFinalFallbackMeters(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.terrainTilesEnabled()) {
-         return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-      }
-
-      if (demSelection.copernicusEnabled()) {
-         return this.sampleCopernicusPreferredMeters(
-            blockX, blockZ, worldScale, highResOcean, this.landMask.sampleLandMask(blockX, blockZ, worldScale), false
-         );
-      }
-
-      return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-   }
-
-   private double sampleFinalFallbackMetersLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.terrainTilesEnabled()) {
-         return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-      }
-
-      if (demSelection.copernicusEnabled()) {
-         double copernicusSample = this.sampleCopernicusPreferredMetersLocalOnly(
-            blockX,
-            blockZ,
-            worldScale,
-            highResOcean,
-            this.landMask.sampleLandMaskLocalOnly(blockX, blockZ, worldScale),
-            false,
-            previewResolutionMeters
-         );
-         if (!Double.isNaN(copernicusSample)) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleFinalFallbackDiagnostic(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.terrainTilesEnabled()) {
          return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
       }
-
-      if (demSelection.copernicusEnabled()) {
-         return this.sampleCopernicusPreferredDiagnostic(
-            blockX, blockZ, worldScale, highResOcean, this.landMask.sampleLandMask(blockX, blockZ, worldScale), false
-         );
-      }
-
-      return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
    }
 
    public void prefetchTiles(double blockX, double blockZ, double worldScale, int radius) {
-      this.prefetchTiles(blockX, blockZ, worldScale, radius, EarthGeneratorSettings.DEFAULT.demSelection());
+      this.prefetchTiles(blockX, blockZ, worldScale, radius, worldScale);
    }
 
    public void prefetchTiles(
@@ -756,212 +158,11 @@ public final class TellusElevationSource implements TellusCacheHandle {
       double blockZ,
       double worldScale,
       int radius,
-      EarthGeneratorSettings.DemSelection demSelection
-   ) {
-      this.prefetchTiles(blockX, blockZ, worldScale, radius, demSelection, worldScale);
-   }
-
-   public void prefetchTiles(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      int radius,
-      EarthGeneratorSettings.DemSelection demSelection,
       double previewResolutionMeters
    ) {
       if (!(worldScale <= 0.0)) {
-         if (NORMALIZED_ENABLED) {
-            this.prefetchNormalizedTiles(blockX, blockZ, worldScale, radius, demSelection, previewResolutionMeters);
-            return;
-         }
-
-         this.prefetchTilesFromProviders(blockX, blockZ, worldScale, radius, demSelection, previewResolutionMeters);
+         this.prefetchTerrainTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
       }
-   }
-
-   private void prefetchTilesFromProviders(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      int radius,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.isAllEnabled()) {
-         this.prefetchTilesFromLegacyProvider(
-            blockX, blockZ, worldScale, radius, EarthGeneratorSettings.DemProvider.AUTO, previewResolutionMeters
-         );
-         return;
-      }
-
-      this.prefetchFilteredTiles(blockX, blockZ, worldScale, radius, demSelection, previewResolutionMeters);
-   }
-
-   private void prefetchTilesFromLegacyProvider(
-      double blockX, double blockZ, double worldScale, int radius, EarthGeneratorSettings.DemProvider demProvider, double previewResolutionMeters
-   ) {
-         TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-         boolean manualSwissAlti3d = demProvider == EarthGeneratorSettings.DemProvider.SWISSALTI3D;
-         boolean autoSwissAlti3d = demProvider == EarthGeneratorSettings.DemProvider.AUTO && this.shouldPreferSwissAlti3d(blockX, blockZ, worldScale);
-         if (manualSwissAlti3d || autoSwissAlti3d) {
-            this.swissAlti3d.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-         }
-
-         if (manualSwissAlti3d) {
-            return;
-         }
-
-         boolean manualAhn = demProvider == EarthGeneratorSettings.DemProvider.AHN;
-         boolean autoAhn = !autoSwissAlti3d && demProvider == EarthGeneratorSettings.DemProvider.AUTO && this.shouldPreferAhn(blockX, blockZ, worldScale);
-         if (manualAhn || autoAhn) {
-            this.ahn.prefetchTiles(blockX, blockZ, worldScale, radius);
-         }
-
-         if (manualAhn) {
-            return;
-         }
-
-         boolean manualCanElevation = demProvider == EarthGeneratorSettings.DemProvider.CANELEVATION;
-         boolean autoCanElevation = !autoSwissAlti3d
-            && !autoAhn
-            && demProvider == EarthGeneratorSettings.DemProvider.AUTO
-            && this.shouldPreferCanElevation(blockX, blockZ, worldScale);
-         if (manualCanElevation || autoCanElevation) {
-            this.canElevation.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-         }
-
-         if (manualCanElevation) {
-            return;
-         }
-
-         boolean manualNorwayDtm1 = demProvider == EarthGeneratorSettings.DemProvider.NORWAYDTM1;
-         boolean autoNorwayDtm1 = !autoSwissAlti3d
-            && !autoAhn
-            && !autoCanElevation
-            && demProvider == EarthGeneratorSettings.DemProvider.AUTO
-            && this.shouldPreferNorwayDtm1(blockX, blockZ, worldScale);
-         if (manualNorwayDtm1 || autoNorwayDtm1) {
-            this.norwayDtm1.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-         }
-
-         if (manualNorwayDtm1) {
-            return;
-         }
-
-         boolean manualJapanGsi = demProvider == EarthGeneratorSettings.DemProvider.JAPANGSI;
-         boolean autoJapanGsi = !autoSwissAlti3d
-            && !autoAhn
-            && !autoCanElevation
-            && !autoNorwayDtm1
-            && demProvider == EarthGeneratorSettings.DemProvider.AUTO
-            && this.shouldPreferJapanGsi(blockX, blockZ, worldScale);
-         if (manualJapanGsi || autoJapanGsi) {
-            this.japanGsi.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-         }
-
-         if (manualJapanGsi) {
-            return;
-         }
-
-         TellusElevationSource.AutoDecision autoDecision = demProvider == EarthGeneratorSettings.DemProvider.AUTO
-            ? this.autoDecision(blockX, blockZ, worldScale)
-            : TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-         if (autoSwissAlti3d || autoAhn || autoCanElevation || autoNorwayDtm1 || autoJapanGsi) {
-            autoDecision = TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-         }
-
-         if (demProvider == EarthGeneratorSettings.DemProvider.ARCTICDEM || demProvider == EarthGeneratorSettings.DemProvider.AUTO) {
-            if (!autoSwissAlti3d && !autoAhn && !autoCanElevation && !autoNorwayDtm1 && !autoJapanGsi) {
-               this.prefetchPolarDem(blockX, blockZ, worldScale, radius);
-            }
-         }
-
-         if (!autoSwissAlti3d
-            && !autoAhn
-            && !autoCanElevation
-            && !autoNorwayDtm1
-            && !autoJapanGsi
-            && (demProvider == EarthGeneratorSettings.DemProvider.USGS || autoDecision.preferUsgs())) {
-            this.usgs.prefetchTiles(blockX, blockZ, worldScale, radius);
-         }
-
-         if (!autoSwissAlti3d
-            && !autoAhn
-            && !autoCanElevation
-            && !autoNorwayDtm1
-            && !autoJapanGsi
-            && (demProvider == EarthGeneratorSettings.DemProvider.COPERNICUS || autoDecision.preferCopernicus() && !autoDecision.preferUsgs())) {
-            this.copernicus.prefetchTiles(blockX, blockZ, worldScale, radius);
-         }
-
-         boolean autoPolar = demProvider == EarthGeneratorSettings.DemProvider.AUTO && latLon != null && isPolarCoverage(latLon.lat());
-         boolean skipTerrainPrefetch = switch (demProvider) {
-            case SWISSALTI3D, AHN, CANELEVATION, NORWAYDTM1, JAPANGSI, ARCTICDEM, USGS, COPERNICUS -> true;
-            case AUTO -> autoSwissAlti3d || autoAhn || autoCanElevation || autoNorwayDtm1 || autoJapanGsi || autoPolar || autoDecision.preferUsgs()
-               || autoDecision.preferCopernicus();
-            default -> false;
-         };
-         boolean prefetchFallbackTerrain = switch (demProvider) {
-            case SWISSALTI3D, AHN, CANELEVATION, NORWAYDTM1, JAPANGSI, ARCTICDEM, USGS, COPERNICUS -> true;
-            case AUTO -> autoSwissAlti3d
-               || autoAhn
-               || autoCanElevation
-               || autoNorwayDtm1
-               || autoJapanGsi
-               || autoPolar
-               || autoDecision.preferUsgs()
-               || autoDecision.preferCopernicus();
-            default -> false;
-         };
-         if (!skipTerrainPrefetch || prefetchFallbackTerrain) {
-            this.prefetchTerrainTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-         }
-   }
-
-   private void prefetchFilteredTiles(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      int radius,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.SWISSALTI3D) && this.shouldPreferSwissAlti3d(blockX, blockZ, worldScale)) {
-         this.swissAlti3d.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.AHN) && this.shouldPreferAhn(blockX, blockZ, worldScale)) {
-         this.ahn.prefetchTiles(blockX, blockZ, worldScale, radius);
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.CANELEVATION) && this.shouldPreferCanElevation(blockX, blockZ, worldScale)) {
-         this.canElevation.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.NORWAYDTM1) && this.shouldPreferNorwayDtm1(blockX, blockZ, worldScale)) {
-         this.norwayDtm1.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.JAPANGSI) && this.shouldPreferJapanGsi(blockX, blockZ, worldScale)) {
-         this.japanGsi.prefetchTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
-      }
-
-      if (demSelection.isEnabled(EarthGeneratorSettings.DemProvider.ARCTICDEM)) {
-         this.prefetchPolarDem(blockX, blockZ, worldScale, radius);
-      }
-
-      TellusElevationSource.AutoDecision autoDecision = this.autoDecision(blockX, blockZ, worldScale);
-      if (autoDecision.preferUsgs() && demSelection.isEnabled(EarthGeneratorSettings.DemProvider.USGS)) {
-         this.usgs.prefetchTiles(blockX, blockZ, worldScale, radius);
-      }
-
-      boolean shouldPrefetchCopernicus = demSelection.copernicusEnabled()
-         && (!demSelection.terrainTilesEnabled() || autoDecision.preferUsgs() || autoDecision.preferCopernicus());
-      if (shouldPrefetchCopernicus) {
-         this.copernicus.prefetchTiles(blockX, blockZ, worldScale, radius);
-      }
-
-      this.prefetchTerrainTiles(blockX, blockZ, worldScale, radius, previewResolutionMeters);
    }
 
    private void prefetchTerrainTiles(double blockX, double blockZ, double worldScale, int radius, double previewResolutionMeters) {
@@ -988,722 +189,6 @@ public final class TellusElevationSource implements TellusCacheHandle {
          for (int tileX = minX; tileX <= maxX; tileX++) {
             this.prefetchTile(new TellusElevationSource.TileKey(zoom, tileX, tileY));
          }
-      }
-   }
-
-   private void prefetchNormalizedTiles(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      int radius,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      double effectiveResolutionMeters = effectiveSampleResolutionMeters(worldScale, previewResolutionMeters);
-      double projectedX = blockX * worldScale;
-      double projectedZ = blockZ * worldScale;
-      double projectedRadius = Math.max(1, radius) * TILE_SIZE * worldScale;
-      NORMALIZED_CACHE.prefetchRange(
-         projectedX - projectedRadius,
-         projectedZ - projectedRadius,
-         projectedX + projectedRadius,
-         projectedZ + projectedRadius,
-         effectiveResolutionMeters,
-         demSelection,
-         true,
-         this::buildNormalizedTile
-      );
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleDiagnosticFromNormalizedCache(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters
-   ) {
-      double effectiveResolutionMeters = effectiveSampleResolutionMeters(worldScale, previewResolutionMeters);
-      NormalizedElevationTileSample sample = NORMALIZED_CACHE.sample(
-         blockX * worldScale, blockZ * worldScale, effectiveResolutionMeters, demSelection, highResOcean, this::buildNormalizedTile
-      );
-      return diagnostic(sample.elevationMeters(), sample.primaryProvider(), sample.providerMask(), sample.resolutionMeters());
-   }
-
-   private NormalizedElevationTile buildNormalizedTile(NormalizedElevationTileKey key) {
-      this.prefetchNormalizedIngestSources(key);
-      ShortRaster heights = ShortRaster.create(NormalizedElevationTileKey.TILE_SIZE, NormalizedElevationTileKey.TILE_SIZE);
-      int sampleCount = NormalizedElevationTileKey.TILE_SIZE * NormalizedElevationTileKey.TILE_SIZE;
-      byte[] primaryProviders = new byte[sampleCount];
-      byte[] blendedFlags = new byte[TellusElevationProvenance.bitSetLength(sampleCount)];
-      int providerMask = 0;
-      double sampleResolutionMeters = key.sampleResolutionMeters();
-
-      for (int localZ = 0; localZ < NormalizedElevationTileKey.TILE_SIZE; localZ++) {
-         for (int localX = 0; localX < NormalizedElevationTileKey.TILE_SIZE; localX++) {
-            double projectedX = key.sampleProjectedX(localX);
-            double projectedZ = key.sampleProjectedZ(localZ);
-            double pseudoBlockX = projectedX / sampleResolutionMeters;
-            double pseudoBlockZ = projectedZ / sampleResolutionMeters;
-            TellusElevationSource.ElevationDiagnostic diagnostic = this.sampleDiagnosticFromProviders(
-               pseudoBlockX, pseudoBlockZ, sampleResolutionMeters, key.highResOcean(), key.demSelection(), sampleResolutionMeters
-            );
-            int sampleIndex = localX + localZ * NormalizedElevationTileKey.TILE_SIZE;
-            double elevationMeters = Double.isFinite(diagnostic.elevation()) ? diagnostic.elevation() : 0.0;
-            int roundedElevation = Mth.clamp((int)Math.round(elevationMeters), (int)Short.MIN_VALUE, (int)Short.MAX_VALUE);
-            heights.set(localX, localZ, (short)roundedElevation);
-            primaryProviders[sampleIndex] = (byte)diagnostic.primaryProvider().ordinal();
-            providerMask |= diagnostic.providerMask();
-            if (diagnostic.usesMultipleProviders()) {
-               blendedFlags[sampleIndex >> 3] = (byte)(blendedFlags[sampleIndex >> 3] | 1 << (sampleIndex & 7));
-            }
-         }
-      }
-
-      return new NormalizedElevationTile(
-         key,
-         heights,
-         new TellusElevationProvenance(
-            NormalizedElevationTileKey.TILE_SIZE, NormalizedElevationTileKey.TILE_SIZE, providerMask, primaryProviders, blendedFlags
-         )
-      );
-   }
-
-   private void prefetchNormalizedIngestSources(NormalizedElevationTileKey key) {
-      double sampleResolutionMeters = key.sampleResolutionMeters();
-      double centerBlockX = key.sampleProjectedX(NormalizedElevationTileKey.TILE_SIZE / 2) / sampleResolutionMeters;
-      double centerBlockZ = key.sampleProjectedZ(NormalizedElevationTileKey.TILE_SIZE / 2) / sampleResolutionMeters;
-
-      try {
-         this.prefetchTilesFromProviders(centerBlockX, centerBlockZ, sampleResolutionMeters, 1, key.demSelection(), sampleResolutionMeters);
-      } catch (RuntimeException error) {
-         Tellus.LOGGER.debug("Failed to prefetch ingest sources for normalized elevation tile {}", key, error);
-      }
-   }
-
-   private void compareNormalizedElevation(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters,
-      double normalizedElevationMeters
-   ) {
-      if (!NORMALIZED_COMPARE) {
-         return;
-      }
-
-      double providerElevationMeters = this.sampleElevationMetersFromProviders(
-         blockX, blockZ, worldScale, highResOcean, demSelection, previewResolutionMeters
-      );
-      if (Math.abs(providerElevationMeters - normalizedElevationMeters) > 1.0) {
-         this.logNormalizedMismatch(blockX, blockZ, worldScale, demSelection, previewResolutionMeters, normalizedElevationMeters, providerElevationMeters);
-      }
-   }
-
-   private void logNormalizedMismatch(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      EarthGeneratorSettings.DemSelection demSelection,
-      double previewResolutionMeters,
-      double normalizedElevationMeters,
-      double providerElevationMeters
-   ) {
-      int logged = NORMALIZED_COMPARE_LOGGED.getAndIncrement();
-      if (logged < NORMALIZED_COMPARE_LOG_LIMIT) {
-         Tellus.LOGGER.warn(
-            "Normalized elevation mismatch at {},{} scale={} selection={} resolution={} normalized={} provider={}",
-            new Object[]{
-               blockX,
-               blockZ,
-               worldScale,
-               demSelection.fingerprint(),
-               previewResolutionMeters,
-               normalizedElevationMeters,
-               providerElevationMeters
-            }
-         );
-      }
-   }
-
-   public static boolean usesPolarDem(EarthGeneratorSettings.DemSelection demSelection) {
-      return demSelection != null && demSelection.usesPolarDem();
-   }
-
-   public static double remaBoundaryBlockZ(double worldScale) {
-      return worldScale > 0.0 ? EarthProjection.latToBlockZ(POLAR_SOUTH_MAX_LAT, worldScale) : Double.POSITIVE_INFINITY;
-   }
-
-   private double sampleAutomaticMeters(double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters) {
-      return this.sampleAutomaticMeters(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, true);
-   }
-
-   private double sampleAutomaticMeters(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters, boolean allowJapanGsi
-   ) {
-      SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (swiss.usable()) {
-         return swiss.elevation();
-      }
-
-      AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-      if (ahn.usable()) {
-         return ahn.elevation();
-      }
-
-      CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (canada.usable()) {
-         return canada.elevation();
-      }
-
-      NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (norway.usable()) {
-         return norway.elevation();
-      }
-
-      if (allowJapanGsi) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return japan.elevation();
-         }
-      }
-
-      TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-      if (polar.usable()) {
-         return polar.elevation();
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecision(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         double usgsSample = this.sampleUsgsMetersWithFallback(blockX, blockZ, worldScale, highResOcean, decision.landMaskSample());
-         if (!Double.isNaN(usgsSample)) {
-            return usgsSample;
-         }
-      }
-
-      if (decision.preferTerrainTiles()) {
-         return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-      }
-
-      if (decision.preferCopernicus()) {
-         double copernicusSample = this.sampleCopernicusPreferredMeters(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), false
-         );
-         if (!Double.isNaN(copernicusSample)) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-   }
-
-   private double sampleAutomaticMetersLocalOnly(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters
-   ) {
-      return this.sampleAutomaticMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, true);
-   }
-
-   private double sampleAutomaticMetersLocalOnly(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters, boolean allowJapanGsi
-   ) {
-      SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (swiss.usable()) {
-         return swiss.elevation();
-      }
-
-      AhnElevationSource.Sample ahn = this.ahn.sampleLocalOnly(blockX, blockZ, worldScale);
-      if (ahn.usable()) {
-         return ahn.elevation();
-      }
-
-      CanElevationSource.Sample canada = this.canElevation.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (canada.usable()) {
-         return canada.elevation();
-      }
-
-      NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (norway.usable()) {
-         return norway.elevation();
-      }
-
-      if (allowJapanGsi) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sampleLocalOnly(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return japan.elevation();
-         }
-      }
-
-      TellusElevationSource.PolarDemSample polar = this.samplePolarDemLocalOnly(blockX, blockZ, worldScale);
-      if (polar.usable()) {
-         return polar.elevation();
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecisionLocalOnly(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         double usgsSample = this.sampleUsgsMetersWithFallbackLocalOnly(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), previewResolutionMeters
-         );
-         if (!Double.isNaN(usgsSample)) {
-            return usgsSample;
-         }
-      }
-
-      if (decision.preferTerrainTiles()) {
-         return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-      }
-
-      if (decision.preferCopernicus()) {
-         double copernicusSample = this.sampleCopernicusPreferredMetersLocalOnly(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), false, previewResolutionMeters
-         );
-         if (!Double.isNaN(copernicusSample)) {
-            return copernicusSample;
-         }
-      }
-
-      return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleAutomaticDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters
-   ) {
-      return this.sampleAutomaticDiagnostic(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters, true);
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleAutomaticDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters, boolean allowJapanGsi
-   ) {
-      SwissAlti3dElevationSource.Sample swiss = this.swissAlti3d.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (swiss.usable()) {
-         return diagnostic(swiss.elevation(), swiss.usage(), swiss.usage().bit(), swiss.resolutionMeters());
-      }
-
-      AhnElevationSource.Sample ahn = this.ahn.sample(blockX, blockZ, worldScale);
-      if (ahn.usable()) {
-         return diagnostic(ahn.elevation(), ahn.usage(), ahn.usage().bit(), ahn.resolutionMeters());
-      }
-
-      CanElevationSource.Sample canada = this.canElevation.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (canada.usable()) {
-         return diagnostic(canada.elevation(), canada.usage(), canada.usage().bit(), canada.resolutionMeters());
-      }
-
-      NorwayDtm1ElevationSource.Sample norway = this.norwayDtm1.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-      if (norway.usable()) {
-         return diagnostic(norway.elevation(), norway.usage(), norway.usage().bit(), norway.resolutionMeters());
-      }
-
-      if (allowJapanGsi) {
-         JapanGsiElevationSource.Sample japan = this.japanGsi.sample(blockX, blockZ, worldScale, previewResolutionMeters);
-         if (japan.usable()) {
-            return diagnostic(japan.elevation(), japan.usage(), japan.usage().bit(), japan.resolutionMeters());
-         }
-      }
-
-      TellusElevationSource.PolarDemSample polar = this.samplePolarDem(blockX, blockZ, worldScale);
-      if (polar.usable()) {
-         return diagnostic(polar.elevation(), polar.usage());
-      }
-
-      TellusElevationSource.AutoDecision decision = this.autoDecision(blockX, blockZ, worldScale);
-      if (decision.preferUsgs()) {
-         TellusElevationSource.ElevationDiagnostic usgsSample = this.sampleUsgsMetersWithFallbackDiagnostic(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample()
-         );
-         if (!Double.isNaN(usgsSample.elevation())) {
-            return usgsSample;
-         }
-      }
-
-      if (decision.preferTerrainTiles()) {
-         return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-      }
-
-      if (decision.preferCopernicus()) {
-         TellusElevationSource.ElevationDiagnostic copernicusSample = this.sampleCopernicusPreferredDiagnostic(
-            blockX, blockZ, worldScale, highResOcean, decision.landMaskSample(), false
-         );
-         if (!Double.isNaN(copernicusSample.elevation())) {
-            return copernicusSample;
-         }
-      }
-
-      return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-   }
-
-   private boolean shouldPreferSwissAlti3d(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      return latLon != null && this.swissAlti3d.isLikelyInCoverage(latLon.lat(), latLon.lon());
-   }
-
-   private boolean shouldPreferAhn(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      return latLon != null && this.ahn.isLikelyInCoverage(latLon.lat(), latLon.lon());
-   }
-
-   private boolean shouldPreferCanElevation(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      return latLon != null && this.canElevation.isLikelyInCoverage(latLon.lat(), latLon.lon());
-   }
-
-   private boolean shouldPreferNorwayDtm1(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      return latLon != null && this.norwayDtm1.isLikelyInCoverage(latLon.lat(), latLon.lon());
-   }
-
-   private boolean shouldPreferJapanGsi(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      return latLon != null && this.japanGsi.isLikelyInCoverage(latLon.lat(), latLon.lon());
-   }
-
-   private boolean shouldPreferTerrainTilesOverCopernicus(double lat, double lon) {
-      double terrainResolutionMeters = this.terrainResolutionIndex.lookupResolutionMeters(lat, lon);
-      return Double.isFinite(terrainResolutionMeters) && terrainResolutionMeters > 0.0 && terrainResolutionMeters < RESOLUTION_METERS;
-   }
-
-   private TellusElevationSource.PolarDemSample samplePolarDem(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      if (latLon == null) {
-         return TellusElevationSource.PolarDemSample.none();
-      } else if (latLon.lat() >= POLAR_NORTH_MIN_LAT) {
-         double arctic = this.arcticDem.sampleElevationMeters(blockX, blockZ, worldScale);
-         return !Double.isNaN(arctic)
-            ? new TellusElevationSource.PolarDemSample(arctic, TellusElevationSource.DemUsage.ARCTICDEM)
-            : TellusElevationSource.PolarDemSample.none();
-      } else if (latLon.lat() <= POLAR_SOUTH_MAX_LAT) {
-         double rema = this.rema.sampleElevationMeters(blockX, blockZ, worldScale);
-         return !Double.isNaN(rema)
-            ? new TellusElevationSource.PolarDemSample(rema, TellusElevationSource.DemUsage.REMA)
-            : TellusElevationSource.PolarDemSample.none();
-      } else {
-         return TellusElevationSource.PolarDemSample.none();
-      }
-   }
-
-   private TellusElevationSource.PolarDemSample samplePolarDemLocalOnly(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      if (latLon == null) {
-         return TellusElevationSource.PolarDemSample.none();
-      } else if (latLon.lat() >= POLAR_NORTH_MIN_LAT) {
-         double arctic = this.arcticDem.sampleElevationMetersLocalOnly(blockX, blockZ, worldScale);
-         return !Double.isNaN(arctic)
-            ? new TellusElevationSource.PolarDemSample(arctic, TellusElevationSource.DemUsage.ARCTICDEM)
-            : TellusElevationSource.PolarDemSample.none();
-      } else if (latLon.lat() <= POLAR_SOUTH_MAX_LAT) {
-         double rema = this.rema.sampleElevationMetersLocalOnly(blockX, blockZ, worldScale);
-         return !Double.isNaN(rema)
-            ? new TellusElevationSource.PolarDemSample(rema, TellusElevationSource.DemUsage.REMA)
-            : TellusElevationSource.PolarDemSample.none();
-      } else {
-         return TellusElevationSource.PolarDemSample.none();
-      }
-   }
-
-   private void prefetchPolarDem(double blockX, double blockZ, double worldScale, int radius) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      if (latLon != null) {
-         if (latLon.lat() >= POLAR_NORTH_MIN_LAT) {
-            this.arcticDem.prefetchTiles(blockX, blockZ, worldScale, radius);
-         } else if (latLon.lat() <= POLAR_SOUTH_MAX_LAT) {
-            this.rema.prefetchTiles(blockX, blockZ, worldScale, radius);
-         }
-      }
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleUsgsMetersWithFallbackDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean
-   ) {
-      TellusLandMaskSource.LandMaskSample landMaskSample = this.landMask.sampleLandMask(blockX, blockZ, worldScale);
-      return this.sampleUsgsMetersWithFallbackDiagnostic(blockX, blockZ, worldScale, highResOcean, landMaskSample);
-   }
-
-   private double sampleUsgsMetersWithFallback(double blockX, double blockZ, double worldScale, boolean highResOcean) {
-      TellusLandMaskSource.LandMaskSample landMaskSample = this.landMask.sampleLandMask(blockX, blockZ, worldScale);
-      return this.sampleUsgsMetersWithFallback(blockX, blockZ, worldScale, highResOcean, landMaskSample);
-   }
-
-   private double sampleUsgsMetersWithFallbackLocalOnly(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters
-   ) {
-      TellusLandMaskSource.LandMaskSample landMaskSample = this.landMask.sampleLandMaskLocalOnly(blockX, blockZ, worldScale);
-      return this.sampleUsgsMetersWithFallbackLocalOnly(blockX, blockZ, worldScale, highResOcean, landMaskSample, previewResolutionMeters);
-   }
-
-   private double sampleUsgsMetersWithFallback(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, TellusLandMaskSource.LandMaskSample landMaskSample
-   ) {
-      double sample = this.sampleUsgsPreferredMeters(blockX, blockZ, worldScale, highResOcean, landMaskSample);
-      return !Double.isNaN(sample)
-         ? sample
-         : this.sampleCopernicusPreferredMeters(blockX, blockZ, worldScale, highResOcean, landMaskSample, true);
-   }
-
-   private double sampleUsgsMetersWithFallbackLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      TellusLandMaskSource.LandMaskSample landMaskSample,
-      double previewResolutionMeters
-   ) {
-      double sample = this.sampleUsgsPreferredMetersLocalOnly(
-         blockX, blockZ, worldScale, highResOcean, landMaskSample, previewResolutionMeters
-      );
-      return !Double.isNaN(sample)
-         ? sample
-         : this.sampleCopernicusPreferredMetersLocalOnly(
-            blockX, blockZ, worldScale, highResOcean, landMaskSample, true, previewResolutionMeters
-         );
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleUsgsMetersWithFallbackDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, TellusLandMaskSource.LandMaskSample landMaskSample
-   ) {
-      TellusElevationSource.ElevationDiagnostic sample = this.sampleUsgsPreferredDiagnostic(blockX, blockZ, worldScale, highResOcean, landMaskSample);
-      return !Double.isNaN(sample.elevation())
-         ? sample
-         : this.sampleCopernicusPreferredDiagnostic(blockX, blockZ, worldScale, highResOcean, landMaskSample, true);
-   }
-
-   private double sampleUsgsPreferredMeters(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, TellusLandMaskSource.LandMaskSample landMaskSample
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-      } else {
-         double sample = this.usgs.sampleElevationMeters(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return Double.NaN;
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-         } else {
-            return sample;
-         }
-      }
-   }
-
-   private double sampleUsgsPreferredMetersLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      TellusLandMaskSource.LandMaskSample landMaskSample,
-      double previewResolutionMeters
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-      } else {
-         double sample = this.usgs.sampleElevationMetersLocalOnly(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return Double.NaN;
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-         } else {
-            return sample;
-         }
-      }
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleUsgsPreferredDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, TellusLandMaskSource.LandMaskSample landMaskSample
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-      } else {
-         double sample = this.usgs.sampleElevationMeters(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return diagnostic(Double.NaN, TellusElevationSource.DemUsage.USGS);
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-         } else {
-            return diagnostic(sample, TellusElevationSource.DemUsage.USGS);
-         }
-      }
-   }
-
-   private double sampleCopernicusPreferredMeters(double blockX, double blockZ, double worldScale, boolean highResOcean) {
-      return this.sampleCopernicusPreferredMeters(
-         blockX, blockZ, worldScale, highResOcean, this.landMask.sampleLandMask(blockX, blockZ, worldScale), true
-      );
-   }
-
-   private double sampleCopernicusPreferredMetersLocalOnly(
-      double blockX, double blockZ, double worldScale, boolean highResOcean, double previewResolutionMeters
-   ) {
-      return this.sampleCopernicusPreferredMetersLocalOnly(
-         blockX, blockZ, worldScale, highResOcean, this.landMask.sampleLandMaskLocalOnly(blockX, blockZ, worldScale), true, previewResolutionMeters
-      );
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleCopernicusPreferredDiagnostic(
-      double blockX, double blockZ, double worldScale, boolean highResOcean
-   ) {
-      return this.sampleCopernicusPreferredDiagnostic(
-         blockX, blockZ, worldScale, highResOcean, this.landMask.sampleLandMask(blockX, blockZ, worldScale), true
-      );
-   }
-
-   private double sampleCopernicusPreferredMeters(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      TellusLandMaskSource.LandMaskSample landMaskSample,
-      boolean terrainLandFallback
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-      } else {
-         double sample = this.copernicus.sampleElevationMeters(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return terrainLandFallback ? this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean) : Double.NaN;
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.sampleTerrariumMeters(blockX, blockZ, worldScale, highResOcean);
-         } else {
-            return sample;
-         }
-      }
-   }
-
-   private double sampleCopernicusPreferredMetersLocalOnly(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      TellusLandMaskSource.LandMaskSample landMaskSample,
-      boolean terrainLandFallback,
-      double previewResolutionMeters
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-      } else {
-         double sample = this.copernicus.sampleElevationMetersLocalOnly(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return terrainLandFallback ? this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters) : Double.NaN;
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.sampleTerrariumMetersLocalOnly(blockX, blockZ, worldScale, highResOcean, previewResolutionMeters);
-         } else {
-            return sample;
-         }
-      }
-   }
-
-   private TellusElevationSource.ElevationDiagnostic sampleCopernicusPreferredDiagnostic(
-      double blockX,
-      double blockZ,
-      double worldScale,
-      boolean highResOcean,
-      TellusLandMaskSource.LandMaskSample landMaskSample,
-      boolean terrainLandFallback
-   ) {
-      if (landMaskSample.known() && !landMaskSample.land()) {
-         return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-      } else {
-         double sample = this.copernicus.sampleElevationMeters(blockX, blockZ, worldScale);
-         if (Double.isNaN(sample)) {
-            return terrainLandFallback
-               ? this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean)
-               : diagnostic(Double.NaN, TellusElevationSource.DemUsage.COPERNICUS);
-         } else if (sample <= 0.0 && highResOcean && !landMaskSample.known()) {
-            return this.terrainTilesDiagnostic(blockX, blockZ, worldScale, highResOcean);
-         } else {
-            return diagnostic(sample, TellusElevationSource.DemUsage.COPERNICUS);
-         }
-      }
-   }
-
-   private TellusElevationSource.AutoDecision autoDecision(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      if (latLon == null) {
-         return TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-      } else {
-         boolean inMexico = isMexicoRegion(latLon.lat(), latLon.lon());
-         boolean inUsgsRegion = isUsgsPreferredRegion(latLon.lat(), latLon.lon());
-         boolean preferTerrainTiles = this.shouldPreferTerrainTilesOverCopernicus(latLon.lat(), latLon.lon());
-         boolean preferUsgs = inUsgsRegion
-            && (!inMexico || !this.terrainBetterThanUsgsMask.available() || !this.terrainBetterThanUsgsMask.hasGoodTerrainResolution(latLon.lat(), latLon.lon()));
-         boolean preferCopernicus = !preferUsgs && !preferTerrainTiles;
-
-         TellusLandMaskSource.LandMaskSample landMaskSample = this.landMask.sampleLandMask(blockX, blockZ, worldScale);
-         return !landMaskSample.known() || landMaskSample.land()
-            ? new TellusElevationSource.AutoDecision(preferUsgs, preferTerrainTiles, preferCopernicus, landMaskSample)
-            : TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-      }
-   }
-
-   private TellusElevationSource.AutoDecision autoDecisionLocalOnly(double blockX, double blockZ, double worldScale) {
-      TellusElevationSource.LatLon latLon = toLatLon(blockX, blockZ, worldScale);
-      if (latLon == null) {
-         return TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-      } else {
-         boolean inMexico = isMexicoRegion(latLon.lat(), latLon.lon());
-         boolean inUsgsRegion = isUsgsPreferredRegion(latLon.lat(), latLon.lon());
-         boolean preferTerrainTiles = this.shouldPreferTerrainTilesOverCopernicus(latLon.lat(), latLon.lon());
-         boolean preferUsgs = inUsgsRegion
-            && (!inMexico || !this.terrainBetterThanUsgsMask.available() || !this.terrainBetterThanUsgsMask.hasGoodTerrainResolution(latLon.lat(), latLon.lon()));
-         boolean preferCopernicus = !preferUsgs && !preferTerrainTiles;
-
-         TellusLandMaskSource.LandMaskSample landMaskSample = this.landMask.sampleLandMaskLocalOnly(blockX, blockZ, worldScale);
-         return !landMaskSample.known() || landMaskSample.land()
-            ? new TellusElevationSource.AutoDecision(preferUsgs, preferTerrainTiles, preferCopernicus, landMaskSample)
-            : TellusElevationSource.AutoDecision.DO_NOT_PREFER;
-      }
-   }
-
-   private static boolean isUsgsPreferredRegion(double lat, double lon) {
-      return isContiguousUsRegion(lat, lon) || isAlaskaRegion(lat, lon) || isHawaiiRegion(lat, lon) || isPuertoRicoRegion(lat, lon) || isMexicoRegion(lat, lon);
-   }
-
-   private static boolean isContiguousUsRegion(double lat, double lon) {
-      return lat >= 24.0 && lat <= 49.8 && lon >= -125.0 && lon <= -66.0;
-   }
-
-   private static boolean isAlaskaRegion(double lat, double lon) {
-      return lat >= 51.0 && lat <= 72.8 && lon >= -170.5 && lon <= -129.0;
-   }
-
-   private static boolean isHawaiiRegion(double lat, double lon) {
-      return lat >= 18.5 && lat <= 22.7 && lon >= -160.8 && lon <= -154.2;
-   }
-
-   private static boolean isPuertoRicoRegion(double lat, double lon) {
-      return lat >= 17.7 && lat <= 18.7 && lon >= -67.5 && lon <= -65.0;
-   }
-
-   private static boolean isMexicoRegion(double lat, double lon) {
-      return pointInPolygon(lon, lat, USGS_PREFERRED_MEXICO_LONS, USGS_PREFERRED_MEXICO_LATS);
-   }
-
-   private static boolean isPolarCoverage(double lat) {
-      return lat >= POLAR_NORTH_MIN_LAT || lat <= POLAR_SOUTH_MAX_LAT;
-   }
-
-   private static boolean pointInPolygon(double lon, double lat, double[] polygonLons, double[] polygonLats) {
-      if (polygonLons.length != polygonLats.length || polygonLons.length < 3) {
-         return false;
-      } else {
-         boolean inside = false;
-         int previous = polygonLons.length - 1;
-
-         for (int current = 0; current < polygonLons.length; current++) {
-            double currentLon = polygonLons[current];
-            double currentLat = polygonLats[current];
-            double previousLon = polygonLons[previous];
-            double previousLat = polygonLats[previous];
-            boolean intersects = currentLat > lat != previousLat > lat;
-            if (intersects) {
-               double edgeLon = (previousLon - currentLon) * (lat - currentLat) / (previousLat - currentLat) + currentLon;
-               if (lon < edgeLon) {
-                  inside = !inside;
-               }
-            }
-
-            previous = current;
-         }
-
-         return inside;
       }
    }
 
@@ -1812,9 +297,47 @@ public final class TellusElevationSource implements TellusCacheHandle {
       }
    }
 
+   /**
+    * Picks the terrarium tile zoom whose pixel footprint matches an LOD column that covers
+    * {@code metersPerColumn} metres of ground, never exceeding the zoom the world scale itself
+    * justifies. Coarse LOD levels therefore download coarse tiles instead of fetching full
+    * resolution data and discarding most of it.
+    */
+   public static int lodZoom(double worldScale, double metersPerColumn) {
+      int nativeZoom = Mth.clamp(selectZoom(worldScale), MIN_ZOOM, LAND_MAX_ZOOM);
+      if (!(metersPerColumn > 0.0)) {
+         return nativeZoom;
+      } else {
+         int footprintZoom = Mth.clamp((int)Math.round(zoomForScale(metersPerColumn)), MIN_ZOOM, LAND_MAX_ZOOM);
+         return Math.min(nativeZoom, footprintZoom);
+      }
+   }
+
+   /**
+    * Samples elevation for a long range LOD column at an explicitly chosen zoom, so callers that
+    * render far terrain can trade vertical detail for a much smaller tile working set.
+    */
+   public double sampleLodElevationMeters(double blockX, double blockZ, double worldScale, boolean highResOcean, int zoom) {
+      int clampedZoom = Mth.clamp(zoom, MIN_ZOOM, LAND_MAX_ZOOM);
+      double sample = this.sampleAtZoom(blockX, blockZ, worldScale, clampedZoom);
+      if (!Double.isNaN(sample)) {
+         if (sample <= 0.0 && highResOcean) {
+            double oceanSample = this.sampleAtZoom(blockX, blockZ, worldScale, Math.min(clampedZoom, OCEAN_MAX_ZOOM));
+            if (!Double.isNaN(oceanSample)) {
+               return oceanSample;
+            }
+         }
+
+         return sample;
+      } else {
+         double oceanSample = this.sampleAtZoom(blockX, blockZ, worldScale, Math.min(clampedZoom, OCEAN_MAX_ZOOM));
+         return !Double.isNaN(oceanSample) ? oceanSample : 0.0;
+      }
+   }
+
    private double sampleAtZoom(double blockX, double blockZ, double worldScale, int zoom) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       if (!(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON)) {
          double latRad = Math.toRadians(lat);
@@ -1842,7 +365,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
    private double sampleAtZoomLocalOnly(double blockX, double blockZ, double worldScale, int zoom) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       if (!(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON)) {
          double latRad = Math.toRadians(lat);
@@ -1870,7 +393,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
    private double sampleAtZoomMemoryOnly(double blockX, double blockZ, double worldScale, int zoom) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       if (!(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON)) {
          double latRad = Math.toRadians(lat);
@@ -1918,7 +441,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
    private static TellusElevationSource.TileKey tileKeyForBlock(double blockX, double blockZ, double worldScale, int zoom) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       if (!(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON)) {
          double latRad = Math.toRadians(lat);
@@ -1943,7 +466,7 @@ public final class TellusElevationSource implements TellusCacheHandle {
 
    private static TellusElevationSource.LatLon toLatLon(double blockX, double blockZ, double worldScale) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       return !(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON) ? new TellusElevationSource.LatLon(lat, lon) : null;
    }
@@ -2303,15 +826,6 @@ public final class TellusElevationSource implements TellusCacheHandle {
    private record LatLon(double lat, double lon) {
    }
 
-   private record PolarDemSample(double elevation, TellusElevationSource.DemUsage usage) {
-      private static TellusElevationSource.PolarDemSample none() {
-         return new TellusElevationSource.PolarDemSample(Double.NaN, null);
-      }
-
-      private boolean usable() {
-         return this.usage != null && !Double.isNaN(this.elevation);
-      }
-   }
 
    public static enum DemUsage {
       TERRAIN_TILES("terrarium", 1),
@@ -2390,14 +904,4 @@ public final class TellusElevationSource implements TellusCacheHandle {
       }
    }
 
-   private record AutoDecision(
-      boolean preferUsgs,
-      boolean preferTerrainTiles,
-      boolean preferCopernicus,
-      TellusLandMaskSource.LandMaskSample landMaskSample
-   ) {
-      private static final TellusElevationSource.AutoDecision DO_NOT_PREFER = new TellusElevationSource.AutoDecision(
-         false, false, false, TellusLandMaskSource.LandMaskSample.unknown()
-      );
-   }
 }

@@ -223,8 +223,8 @@ public final class DhLodWaterResolver {
       boolean[] lineSample
    ) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(this.settings.worldScale());
-      double minWorldX = feature.minLon() * blocksPerDegree;
-      double maxWorldX = feature.maxLon() * blocksPerDegree;
+      double minWorldX = EarthProjection.lonToBlockX(feature.minLon(), this.settings.worldScale());
+      double maxWorldX = EarthProjection.lonToBlockX(feature.maxLon(), this.settings.worldScale());
       double minLatWorldZ = EarthProjection.latToBlockZ(feature.minLat(), this.settings.worldScale());
       double maxLatWorldZ = EarthProjection.latToBlockZ(feature.maxLat(), this.settings.worldScale());
       double minWorldZ = Math.min(minLatWorldZ, maxLatWorldZ);
@@ -471,3 +471,4 @@ public final class DhLodWaterResolver {
       }
    }
 }
+

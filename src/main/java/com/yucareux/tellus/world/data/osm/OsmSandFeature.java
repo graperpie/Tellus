@@ -73,7 +73,7 @@ public final class OsmSandFeature {
          return false;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.containsLonLat(lon, lat);
       }
@@ -118,3 +118,4 @@ public final class OsmSandFeature {
       return copy;
    }
 }
+

@@ -81,7 +81,7 @@ public final class Usgs3depElevationSource implements TellusCacheHandle {
          return Double.NaN;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.sampleLatLonElevationMeters(lat, lon, worldScale);
       }
@@ -92,7 +92,7 @@ public final class Usgs3depElevationSource implements TellusCacheHandle {
          return Double.NaN;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return this.sampleLatLonElevationMetersLocalOnly(lat, lon, worldScale);
       }
@@ -131,7 +131,7 @@ public final class Usgs3depElevationSource implements TellusCacheHandle {
    public void prefetchTiles(double blockX, double blockZ, double worldScale, int radius) {
       if (!(worldScale <= 0.0) && radius > 0) {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          if (lat >= MIN_LAT && lat <= MAX_LAT && lon >= MIN_LON && lon <= MAX_LON) {
             Usgs3depElevationSource.ResolutionLevel level = Usgs3depElevationSource.ResolutionLevel.forWorldScale(worldScale);
@@ -647,3 +647,4 @@ public final class Usgs3depElevationSource implements TellusCacheHandle {
       }
    }
 }
+

@@ -289,7 +289,7 @@ public class ArcticDemElevationSource implements TellusCacheHandle {
 
    private static ArcticDemElevationSource.LatLon toLatLon(double blockX, double blockZ, double worldScale) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      double lon = blockX / blocksPerDegree;
+      double lon = EarthProjection.blockXToLon(blockX, worldScale);
       double lat = EarthProjection.blockZToLat(blockZ, worldScale);
       return new ArcticDemElevationSource.LatLon(lat, lon);
    }
@@ -1481,3 +1481,4 @@ public class ArcticDemElevationSource implements TellusCacheHandle {
       }
    }
 }
+

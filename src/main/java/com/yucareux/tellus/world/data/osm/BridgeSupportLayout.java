@@ -25,7 +25,7 @@ public final class BridgeSupportLayout {
       double totalLength = 0.0;
 
       for (int i = 0; i < road.pointCount(); i++) {
-         worldXs[i] = road.lonAt(i) * blocksPerDegree;
+         worldXs[i] = EarthProjection.lonToBlockX(road.lonAt(i), worldScale);
          worldZs[i] = EarthProjection.latToBlockZ(road.latAt(i), worldScale);
          if (i > 0) {
             double dx = worldXs[i] - worldXs[i - 1];
@@ -145,3 +145,4 @@ public final class BridgeSupportLayout {
       }
    }
 }
+

@@ -63,10 +63,10 @@ public record EarthGeneratorSettings(
    int voxyChunkPregenMaxRadius,
    int voxyChunkPregenChunksPerTick,
    EarthGeneratorSettings.DistantHorizonsRenderMode distantHorizonsRenderMode,
-   EarthGeneratorSettings.DemSelection demSelection,
    boolean enableRoads,
    boolean enableBuildings,
-   boolean enableWater
+   boolean enableWater,
+   boolean experimentalIncreaseHeight
 ) {
    public static final double DEFAULT_SPAWN_LATITUDE = 27.9881;
    public static final double DEFAULT_SPAWN_LONGITUDE = 86.925;
@@ -84,8 +84,8 @@ public record EarthGeneratorSettings(
    private static final int MAX_VOXY_PREGEN_CHUNKS_PER_TICK = 200;
    private static final int MAX_DH_OSM_DETAIL = 24;
    private static final boolean FIXED_DH_OSM_FEATURES = true;
-   private static final int FIXED_DH_OSM_ROAD_MAX_DETAIL = 6;
-   private static final int FIXED_DH_OSM_BUILDING_MAX_DETAIL = 6;
+   private static final int FIXED_DH_OSM_ROAD_MAX_DETAIL = 15;
+   private static final int FIXED_DH_OSM_BUILDING_MAX_DETAIL = 15;
    private static final boolean FIXED_DH_OSM_NON_BLOCKING_FETCH = true;
    public static final EarthGeneratorSettings DEFAULT = new EarthGeneratorSettings(
       30.0,
@@ -134,7 +134,7 @@ public record EarthGeneratorSettings(
       96,
       4,
       EarthGeneratorSettings.DistantHorizonsRenderMode.FAST,
-      EarthGeneratorSettings.DemSelection.automaticSelection(),
+      false,
       false,
       false,
       false
@@ -213,51 +213,6 @@ public record EarthGeneratorSettings(
    private static final MapCodec<EarthGeneratorSettings.DistantHorizonsRenderMode> DISTANT_HORIZONS_RENDER_MODE_CODEC = EarthGeneratorSettings.DistantHorizonsRenderMode.CODEC
       .fieldOf("distant_horizons_render_mode")
       .orElse(DEFAULT.distantHorizonsRenderMode());
-   private static final MapCodec<Boolean> DEM_AUTOMATIC_FIELD_CODEC = Codec.BOOL.fieldOf("dem_automatic");
-   private static final MapCodec<List<String>> DEM_ENABLED_PROVIDERS_FIELD_CODEC = Codec.STRING.listOf().fieldOf("dem_enabled_providers");
-   private static final MapCodec<EarthGeneratorSettings.DemProvider> LEGACY_DEM_PROVIDER_CODEC = EarthGeneratorSettings.DemProvider.CODEC
-      .fieldOf("dem_provider")
-      .orElse(EarthGeneratorSettings.DemProvider.AUTO);
-   private static final MapCodec<EarthGeneratorSettings.DemSelection> DEM_SELECTION_CODEC = MapCodec.of(
-      new Implementation<EarthGeneratorSettings.DemSelection>() {
-         public <T> RecordBuilder<T> encode(EarthGeneratorSettings.DemSelection input, DynamicOps<T> ops, RecordBuilder<T> prefix) {
-            RecordBuilder<T> builder = EarthGeneratorSettings.DEM_AUTOMATIC_FIELD_CODEC.encode(input.automatic(), ops, prefix);
-            return EarthGeneratorSettings.DEM_ENABLED_PROVIDERS_FIELD_CODEC.encode(input.enabledProviderIds(), ops, builder);
-         }
-
-         public <T> Stream<T> keys(DynamicOps<T> ops) {
-            return Stream.concat(
-               EarthGeneratorSettings.DEM_AUTOMATIC_FIELD_CODEC.keys(ops), EarthGeneratorSettings.DEM_ENABLED_PROVIDERS_FIELD_CODEC.keys(ops)
-            );
-         }
-      },
-      new com.mojang.serialization.MapDecoder.Implementation<EarthGeneratorSettings.DemSelection>() {
-         public <T> DataResult<EarthGeneratorSettings.DemSelection> decode(DynamicOps<T> ops, MapLike<T> input) {
-            boolean hasAutomatic = input.get("dem_automatic") != null;
-            boolean hasEnabledProviders = input.get("dem_enabled_providers") != null;
-            if (hasAutomatic || hasEnabledProviders) {
-               DataResult<Boolean> automatic = hasAutomatic
-                  ? EarthGeneratorSettings.DEM_AUTOMATIC_FIELD_CODEC.decode(ops, input)
-                  : DataResult.success(!hasEnabledProviders ? EarthGeneratorSettings.DEFAULT.demSelection().automatic() : false);
-               DataResult<List<String>> enabledProviders = hasEnabledProviders
-                  ? EarthGeneratorSettings.DEM_ENABLED_PROVIDERS_FIELD_CODEC.decode(ops, input)
-                  : DataResult.success(EarthGeneratorSettings.DEFAULT.demSelection().enabledProviderIds());
-               return automatic.apply2(EarthGeneratorSettings.DemSelection::fromSerializedIds, enabledProviders);
-            }
-
-            return input.get("dem_provider") != null
-               ? EarthGeneratorSettings.LEGACY_DEM_PROVIDER_CODEC.decode(ops, input).map(EarthGeneratorSettings.DemSelection::fromLegacyProvider)
-               : DataResult.success(EarthGeneratorSettings.DEFAULT.demSelection());
-         }
-
-         public <T> Stream<T> keys(DynamicOps<T> ops) {
-            Stream<T> currentKeys = Stream.concat(
-               EarthGeneratorSettings.DEM_AUTOMATIC_FIELD_CODEC.keys(ops), EarthGeneratorSettings.DEM_ENABLED_PROVIDERS_FIELD_CODEC.keys(ops)
-            );
-            return Stream.concat(currentKeys, EarthGeneratorSettings.LEGACY_DEM_PROVIDER_CODEC.keys(ops));
-         }
-      }
-   );
    private static final MapCodec<Boolean> DISTANT_HORIZONS_WATER_RESOLVER_CODEC = Codec.BOOL
       .fieldOf("distant_horizons_water_resolver")
       .orElse(DEFAULT.distantHorizonsWaterResolver());
@@ -279,6 +234,9 @@ public record EarthGeneratorSettings(
    private static final MapCodec<Boolean> ENABLE_ROADS_CODEC = Codec.BOOL.fieldOf("enable_roads").orElse(DEFAULT.enableRoads());
    private static final MapCodec<Boolean> ENABLE_BUILDINGS_CODEC = Codec.BOOL.fieldOf("enable_buildings").orElse(DEFAULT.enableBuildings());
    private static final MapCodec<Boolean> ENABLE_WATER_CODEC = Codec.BOOL.fieldOf("enable_water").orElse(DEFAULT.enableWater());
+   private static final MapCodec<Boolean> EXPERIMENTAL_INCREASE_HEIGHT_CODEC = Codec.BOOL
+      .fieldOf("experimental_increase_height")
+      .orElse(DEFAULT.experimentalIncreaseHeight());
    private static final MapCodec<Boolean> VOXY_CHUNK_PREGEN_ENABLED_CODEC = Codec.BOOL
       .fieldOf("voxy_chunk_pregen_enabled")
       .orElse(DEFAULT.voxyChunkPregenEnabled());
@@ -331,7 +289,6 @@ public record EarthGeneratorSettings(
             Optional<Integer> seaLevel = input.seaLevel() == -2147483647 ? Optional.empty() : Optional.of(input.seaLevel());
             builder = EarthGeneratorSettings.SEA_LEVEL_CODEC.encode(seaLevel, ops, builder);
             builder = EarthGeneratorSettings.DISTANT_HORIZONS_RENDER_MODE_CODEC.encode(input.distantHorizonsRenderMode(), ops, builder);
-            builder = EarthGeneratorSettings.DEM_SELECTION_CODEC.encode(input.demSelection(), ops, builder);
             builder = EarthGeneratorSettings.DISTANT_HORIZONS_WATER_RESOLVER_CODEC.encode(input.distantHorizonsWaterResolver(), ops, builder);
             builder = EarthGeneratorSettings.DISTANT_HORIZONS_OSM_FEATURES_CODEC.encode(input.distantHorizonsOsmFeatures(), ops, builder);
             builder = EarthGeneratorSettings.DISTANT_HORIZONS_OSM_ROAD_MAX_DETAIL_CODEC.encode(input.distantHorizonsOsmRoadMaxDetail(), ops, builder);
@@ -343,6 +300,7 @@ public record EarthGeneratorSettings(
             builder = EarthGeneratorSettings.ENABLE_ROADS_CODEC.encode(input.enableRoads(), ops, builder);
             builder = EarthGeneratorSettings.ENABLE_BUILDINGS_CODEC.encode(input.enableBuildings(), ops, builder);
             builder = EarthGeneratorSettings.ENABLE_WATER_CODEC.encode(input.enableWater(), ops, builder);
+            builder = EarthGeneratorSettings.EXPERIMENTAL_INCREASE_HEIGHT_CODEC.encode(input.experimentalIncreaseHeight(), ops, builder);
             builder = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_ENABLED_CODEC.encode(input.voxyChunkPregenEnabled(), ops, builder);
             builder = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_MAX_RADIUS_CODEC.encode(input.voxyChunkPregenMaxRadius(), ops, builder);
             builder = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_CHUNKS_PER_TICK_CODEC.encode(input.voxyChunkPregenChunksPerTick(), ops, builder);
@@ -355,7 +313,6 @@ public record EarthGeneratorSettings(
          public <T> Stream<T> keys(DynamicOps<T> ops) {
             Stream<T> baseKeys = Stream.concat(EarthGeneratorSettings.BASE_CODEC.keys(ops), EarthGeneratorSettings.SEA_LEVEL_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_RENDER_MODE_CODEC.keys(ops));
-            baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DEM_SELECTION_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_WATER_RESOLVER_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_OSM_FEATURES_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_OSM_ROAD_MAX_DETAIL_CODEC.keys(ops));
@@ -367,6 +324,7 @@ public record EarthGeneratorSettings(
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_ROADS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_BUILDINGS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_WATER_CODEC.keys(ops));
+            baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.EXPERIMENTAL_INCREASE_HEIGHT_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_ENABLED_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_MAX_RADIUS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_CHUNKS_PER_TICK_CODEC.keys(ops));
@@ -382,7 +340,6 @@ public record EarthGeneratorSettings(
             DataResult<Optional<Integer>> seaLevel = EarthGeneratorSettings.SEA_LEVEL_CODEC.decode(ops, input);
             DataResult<EarthGeneratorSettings.DistantHorizonsRenderMode> distantHorizonsRenderMode = EarthGeneratorSettings.DISTANT_HORIZONS_RENDER_MODE_CODEC
                .decode(ops, input);
-            DataResult<EarthGeneratorSettings.DemSelection> demSelection = EarthGeneratorSettings.DEM_SELECTION_CODEC.decode(ops, input);
             DataResult<Boolean> distantHorizonsWaterResolver = EarthGeneratorSettings.DISTANT_HORIZONS_WATER_RESOLVER_CODEC.decode(ops, input);
             DataResult<Boolean> distantHorizonsOsmFeatures = EarthGeneratorSettings.DISTANT_HORIZONS_OSM_FEATURES_CODEC.decode(ops, input);
             DataResult<Integer> distantHorizonsOsmRoadMaxDetail = EarthGeneratorSettings.DISTANT_HORIZONS_OSM_ROAD_MAX_DETAIL_CODEC.decode(ops, input);
@@ -394,6 +351,7 @@ public record EarthGeneratorSettings(
             DataResult<Boolean> enableRoads = EarthGeneratorSettings.ENABLE_ROADS_CODEC.decode(ops, input);
             DataResult<Boolean> enableBuildings = EarthGeneratorSettings.ENABLE_BUILDINGS_CODEC.decode(ops, input);
             DataResult<Boolean> enableWater = EarthGeneratorSettings.ENABLE_WATER_CODEC.decode(ops, input);
+            DataResult<Boolean> experimentalIncreaseHeight = EarthGeneratorSettings.EXPERIMENTAL_INCREASE_HEIGHT_CODEC.decode(ops, input);
             DataResult<Boolean> voxyChunkPregenEnabled = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_ENABLED_CODEC.decode(ops, input);
             DataResult<Integer> voxyChunkPregenMaxRadius = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_MAX_RADIUS_CODEC.decode(ops, input);
             DataResult<Integer> voxyChunkPregenChunksPerTick = EarthGeneratorSettings.VOXY_CHUNK_PREGEN_CHUNKS_PER_TICK_CODEC.decode(ops, input);
@@ -405,8 +363,7 @@ public record EarthGeneratorSettings(
             DataResult<EarthGeneratorSettings.SettingsBase> withRenderMode = withSeaLevel.apply2(
                EarthGeneratorSettings::applyDistantHorizonsRenderMode, distantHorizonsRenderMode
             );
-            DataResult<EarthGeneratorSettings.SettingsBase> withDemSelection = withRenderMode.apply2(EarthGeneratorSettings::applyDemSelection, demSelection);
-            DataResult<EarthGeneratorSettings.SettingsBase> withWaterResolver = withDemSelection.apply2(
+            DataResult<EarthGeneratorSettings.SettingsBase> withWaterResolver = withRenderMode.apply2(
                EarthGeneratorSettings::applyDistantHorizonsWaterResolver, distantHorizonsWaterResolver
             );
             DataResult<EarthGeneratorSettings.SettingsBase> withOsmFeatures = withWaterResolver.apply2(
@@ -435,6 +392,7 @@ public record EarthGeneratorSettings(
             settings = settings.apply2(EarthGeneratorSettings::applyEnableRoads, enableRoads);
             settings = settings.apply2(EarthGeneratorSettings::applyEnableBuildings, enableBuildings);
             settings = settings.apply2(EarthGeneratorSettings::applyEnableWater, enableWater);
+            settings = settings.apply2(EarthGeneratorSettings::applyExperimentalIncreaseHeight, experimentalIncreaseHeight);
             settings = settings.apply2(EarthGeneratorSettings::applyDeepDark, deepDark);
             settings = settings.apply2(EarthGeneratorSettings::applyGeodes, geodes);
             settings = settings.apply2(EarthGeneratorSettings::withStructureSettings, structures);
@@ -444,7 +402,6 @@ public record EarthGeneratorSettings(
          public <T> Stream<T> keys(DynamicOps<T> ops) {
             Stream<T> baseKeys = Stream.concat(EarthGeneratorSettings.BASE_CODEC.keys(ops), EarthGeneratorSettings.SEA_LEVEL_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_RENDER_MODE_CODEC.keys(ops));
-            baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DEM_SELECTION_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_WATER_RESOLVER_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_OSM_FEATURES_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.DISTANT_HORIZONS_OSM_ROAD_MAX_DETAIL_CODEC.keys(ops));
@@ -456,6 +413,7 @@ public record EarthGeneratorSettings(
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_ROADS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_BUILDINGS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.ENABLE_WATER_CODEC.keys(ops));
+            baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.EXPERIMENTAL_INCREASE_HEIGHT_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_ENABLED_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_MAX_RADIUS_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.VOXY_CHUNK_PREGEN_CHUNKS_PER_TICK_CODEC.keys(ops));
@@ -515,10 +473,10 @@ public record EarthGeneratorSettings(
       int voxyChunkPregenMaxRadius,
       int voxyChunkPregenChunksPerTick,
       EarthGeneratorSettings.DistantHorizonsRenderMode distantHorizonsRenderMode,
-      EarthGeneratorSettings.DemSelection demSelection,
       boolean enableRoads,
       boolean enableBuildings,
-      boolean enableWater
+      boolean enableWater,
+      boolean experimentalIncreaseHeight
    ) {
       worldScale = clampWorldScale(worldScale);
       voxyChunkPregenMaxRadius = Mth.clamp(voxyChunkPregenMaxRadius, 0, MAX_VOXY_PREGEN_RADIUS);
@@ -573,10 +531,10 @@ public record EarthGeneratorSettings(
       this.voxyChunkPregenMaxRadius = voxyChunkPregenMaxRadius;
       this.voxyChunkPregenChunksPerTick = voxyChunkPregenChunksPerTick;
       this.distantHorizonsRenderMode = Objects.requireNonNull(distantHorizonsRenderMode, "distantHorizonsRenderMode");
-      this.demSelection = Objects.requireNonNull(demSelection, "demSelection");
       this.enableRoads = enableRoads;
       this.enableBuildings = enableBuildings;
       this.enableWater = enableWater;
+      this.experimentalIncreaseHeight = experimentalIncreaseHeight;
    }
 
    public boolean isSeaLevelAutomatic() {
@@ -668,8 +626,7 @@ public record EarthGeneratorSettings(
          DEFAULT.voxyChunkPregenEnabled(),
          DEFAULT.voxyChunkPregenMaxRadius(),
          DEFAULT.voxyChunkPregenChunksPerTick(),
-         DEFAULT.distantHorizonsRenderMode(),
-         DEFAULT.demSelection()
+         DEFAULT.distantHorizonsRenderMode()
       );
    }
 
@@ -711,11 +668,6 @@ public record EarthGeneratorSettings(
       return settings.withDistantHorizonsRenderMode(Objects.requireNonNull(renderMode, "renderMode"));
    }
 
-   private static EarthGeneratorSettings.SettingsBase applyDemSelection(
-      EarthGeneratorSettings.SettingsBase settings, EarthGeneratorSettings.DemSelection demSelection
-   ) {
-      return settings.withDemSelection(Objects.requireNonNull(demSelection, "demSelection"));
-   }
 
    private static EarthGeneratorSettings.SettingsBase applyDistantHorizonsWaterResolver(EarthGeneratorSettings.SettingsBase settings, Boolean enabled) {
       return settings.withDistantHorizonsWaterResolver(Objects.requireNonNull(enabled, "distantHorizonsWaterResolver"));
@@ -821,10 +773,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -888,10 +840,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -943,10 +895,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -998,10 +950,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1053,10 +1005,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1108,10 +1060,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1163,10 +1115,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1218,10 +1170,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          enableRoads,
          this.enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1273,10 +1225,10 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          enableBuildings,
-         this.enableWater
+         this.enableWater,
+         this.experimentalIncreaseHeight
       );
    }
 
@@ -1328,14 +1280,77 @@ public record EarthGeneratorSettings(
          this.voxyChunkPregenMaxRadius,
          this.voxyChunkPregenChunksPerTick,
          this.distantHorizonsRenderMode,
-         this.demSelection,
          this.enableRoads,
          this.enableBuildings,
-         enableWater
+         enableWater,
+         this.experimentalIncreaseHeight
+      );
+   }
+
+   private static EarthGeneratorSettings applyExperimentalIncreaseHeight(EarthGeneratorSettings settings, Boolean enabled) {
+      return settings.withExperimentalIncreaseHeight(Objects.requireNonNull(enabled, "experimentalIncreaseHeight"));
+   }
+
+   private EarthGeneratorSettings withExperimentalIncreaseHeight(boolean experimentalIncreaseHeight) {
+      return new EarthGeneratorSettings(
+         this.worldScale,
+         this.terrestrialHeightScale,
+         this.oceanicHeightScale,
+         this.heightOffset,
+         this.seaLevel,
+         this.spawnLatitude,
+         this.spawnLongitude,
+         this.minAltitude,
+         this.maxAltitude,
+         this.riverLakeShorelineBlend,
+         this.oceanShorelineBlend,
+         this.shorelineBlendCliffLimit,
+         this.caveGeneration,
+         this.oreDistribution,
+         this.lavaPools,
+         this.addStrongholds,
+         this.addVillages,
+         this.addMineshafts,
+         this.addOceanMonuments,
+         this.addWoodlandMansions,
+         this.addDesertTemples,
+         this.addJungleTemples,
+         this.addPillagerOutposts,
+         this.addRuinedPortals,
+         this.addShipwrecks,
+         this.addOceanRuins,
+         this.addBuriedTreasure,
+         this.addIgloos,
+         this.addWitchHuts,
+         this.addAncientCities,
+         this.addTrialChambers,
+         this.addTrailRuins,
+         this.deepDark,
+         this.geodes,
+         this.distantHorizonsWaterResolver,
+         this.distantHorizonsOsmFeatures,
+         this.distantHorizonsOsmRoadMaxDetail,
+         this.distantHorizonsOsmBuildingMaxDetail,
+         this.distantHorizonsOsmNonBlockingFetch,
+         this.realtimeTime,
+         this.realtimeWeather,
+         this.historicalSnow,
+         this.voxyChunkPregenEnabled,
+         this.voxyChunkPregenMaxRadius,
+         this.voxyChunkPregenChunksPerTick,
+         this.distantHorizonsRenderMode,
+         this.enableRoads,
+         this.enableBuildings,
+         this.enableWater,
+         experimentalIncreaseHeight
       );
    }
 
    public static EarthGeneratorSettings.HeightLimits resolveHeightLimits(EarthGeneratorSettings settings) {
+      if (settings.experimentalIncreaseHeight()) {
+         return resolveExperimentalHeightLimits();
+      }
+
       int autoMin = computeAutoMinAltitude(settings);
       int autoMax = computeAutoMaxAltitude(settings);
       boolean autoMinEnabled = settings.minAltitude() == Integer.MIN_VALUE;
@@ -1370,6 +1385,18 @@ public record EarthGeneratorSettings(
       } else {
          return EarthGeneratorSettings.HeightLimits.maxRange();
       }
+   }
+
+   /**
+    * Increase Height owns the complete land-priority packed range. Keeping this fixed prevents a
+    * valid high-latitude column from being clipped by spawn-local automatic bounds.
+    */
+   private static EarthGeneratorSettings.HeightLimits resolveExperimentalHeightLimits() {
+      return new EarthGeneratorSettings.HeightLimits(
+         HighYPackedCoordinateProfile.TELLUS_DIMENSION_MIN_Y,
+         HighYPackedCoordinateProfile.TELLUS_DIMENSION_Y_SIZE,
+         HighYPackedCoordinateProfile.TELLUS_DIMENSION_Y_SIZE
+      );
    }
 
    private static int computeAutoMaxAltitude(EarthGeneratorSettings settings) {
@@ -1441,217 +1468,6 @@ public record EarthGeneratorSettings(
       }
    }
 
-   public static enum DemProvider {
-      AUTO("auto", false, 0),
-      TERRARIUM("terrarium", true, 1),
-      SWISSALTI3D("swissalti3d", true, 1 << 1),
-      AHN("ahn", true, 1 << 2),
-      CANELEVATION("canelevation", true, 1 << 3),
-      NORWAYDTM1("norwaydtm1", true, 1 << 4),
-      JAPANGSI("japangsi", true, 1 << 5),
-      USGS("usgs", true, 1 << 6),
-      COPERNICUS("copernicus", true, 1 << 7),
-      ARCTICDEM("arcticdem", true, 1 << 8);
-
-      public static final Codec<EarthGeneratorSettings.DemProvider> CODEC = Codec.STRING
-         .xmap(EarthGeneratorSettings.DemProvider::fromId, EarthGeneratorSettings.DemProvider::id);
-      private final String id;
-      private final boolean userSelectable;
-      private final int selectionBit;
-
-      private DemProvider(String id, boolean userSelectable, int selectionBit) {
-         this.id = Objects.requireNonNull(id, "id");
-         this.userSelectable = userSelectable;
-         this.selectionBit = selectionBit;
-      }
-
-      public String id() {
-         return this.id;
-      }
-
-      public boolean userSelectable() {
-         return this.userSelectable;
-      }
-
-      public int selectionBit() {
-         return this.selectionBit;
-      }
-
-      public static EarthGeneratorSettings.DemProvider fromId(String id) {
-         if (id == null) {
-            return AUTO;
-         } else {
-            if ("hma".equalsIgnoreCase(id)) {
-               return AUTO;
-            }
-
-            for (EarthGeneratorSettings.DemProvider provider : values()) {
-               if (provider.id.equalsIgnoreCase(id)) {
-                  return provider;
-               }
-            }
-
-            return AUTO;
-         }
-      }
-   }
-
-   public record DemSelection(boolean automatic, int enabledProviderMask) {
-      private static final List<EarthGeneratorSettings.DemProvider> USER_SELECTABLE_PROVIDERS = List.of(
-         EarthGeneratorSettings.DemProvider.TERRARIUM,
-         EarthGeneratorSettings.DemProvider.SWISSALTI3D,
-         EarthGeneratorSettings.DemProvider.AHN,
-         EarthGeneratorSettings.DemProvider.CANELEVATION,
-         EarthGeneratorSettings.DemProvider.NORWAYDTM1,
-         EarthGeneratorSettings.DemProvider.JAPANGSI,
-         EarthGeneratorSettings.DemProvider.USGS,
-         EarthGeneratorSettings.DemProvider.COPERNICUS,
-         EarthGeneratorSettings.DemProvider.ARCTICDEM
-      );
-      private static final int GLOBAL_COVERAGE_MASK = EarthGeneratorSettings.DemProvider.TERRARIUM.selectionBit()
-         | EarthGeneratorSettings.DemProvider.COPERNICUS.selectionBit();
-      private static final int FULL_USER_SELECTABLE_MASK = computeFullUserSelectableMask();
-      private static final List<String> FULL_PROVIDER_IDS = USER_SELECTABLE_PROVIDERS.stream().map(EarthGeneratorSettings.DemProvider::id).toList();
-      private static final EarthGeneratorSettings.DemSelection AUTOMATIC_SELECTION = new EarthGeneratorSettings.DemSelection(true, FULL_USER_SELECTABLE_MASK);
-
-      public DemSelection {
-         int normalizedMask = automatic ? FULL_USER_SELECTABLE_MASK : normalizeManualMask(enabledProviderMask);
-         enabledProviderMask = normalizedMask;
-      }
-
-      public static EarthGeneratorSettings.DemSelection automaticSelection() {
-         return AUTOMATIC_SELECTION;
-      }
-
-      public static EarthGeneratorSettings.DemSelection manual(int enabledProviderMask) {
-         return new EarthGeneratorSettings.DemSelection(false, enabledProviderMask);
-      }
-
-      public static EarthGeneratorSettings.DemSelection manual(List<EarthGeneratorSettings.DemProvider> providers) {
-         return manual(maskFromProviders(providers));
-      }
-
-      private static EarthGeneratorSettings.DemSelection fromSerializedIds(boolean automatic, List<String> providerIds) {
-         return automatic ? automaticSelection() : manual(maskFromProviderIds(providerIds));
-      }
-
-      public static EarthGeneratorSettings.DemSelection fromLegacyProvider(EarthGeneratorSettings.DemProvider legacyProvider) {
-         EarthGeneratorSettings.DemProvider provider = Objects.requireNonNullElse(legacyProvider, EarthGeneratorSettings.DemProvider.AUTO);
-         return switch (provider) {
-            case AUTO -> automaticSelection();
-            case TERRARIUM -> manual(List.of(EarthGeneratorSettings.DemProvider.TERRARIUM));
-            case COPERNICUS -> manual(List.of(EarthGeneratorSettings.DemProvider.COPERNICUS));
-            case USGS -> manual(List.of(EarthGeneratorSettings.DemProvider.USGS, EarthGeneratorSettings.DemProvider.COPERNICUS));
-            default -> manual(List.of(provider, EarthGeneratorSettings.DemProvider.TERRARIUM));
-         };
-      }
-
-      public boolean isEnabled(EarthGeneratorSettings.DemProvider provider) {
-         return provider != null && provider.userSelectable() && (this.enabledProviderMask & provider.selectionBit()) != 0;
-      }
-
-      public boolean usesPolarDem() {
-         return this.isEnabled(EarthGeneratorSettings.DemProvider.ARCTICDEM);
-      }
-
-      public boolean terrainTilesEnabled() {
-         return this.isEnabled(EarthGeneratorSettings.DemProvider.TERRARIUM);
-      }
-
-      public boolean copernicusEnabled() {
-         return this.isEnabled(EarthGeneratorSettings.DemProvider.COPERNICUS);
-      }
-
-      public boolean isAllEnabled() {
-         return this.enabledProviderMask == FULL_USER_SELECTABLE_MASK;
-      }
-
-      public String fingerprint() {
-         return "mask_" + Integer.toHexString(this.enabledProviderMask);
-      }
-
-      public List<EarthGeneratorSettings.DemProvider> enabledProvidersInUiOrder() {
-         List<EarthGeneratorSettings.DemProvider> providers = new ArrayList<>(USER_SELECTABLE_PROVIDERS.size());
-
-         for (EarthGeneratorSettings.DemProvider provider : USER_SELECTABLE_PROVIDERS) {
-            if (this.isEnabled(provider)) {
-               providers.add(provider);
-            }
-         }
-
-         return List.copyOf(providers);
-      }
-
-      public List<String> enabledProviderIds() {
-         return this.isAllEnabled() ? FULL_PROVIDER_IDS : this.enabledProvidersInUiOrder().stream().map(EarthGeneratorSettings.DemProvider::id).toList();
-      }
-
-      public static List<EarthGeneratorSettings.DemProvider> userSelectableProviders() {
-         return USER_SELECTABLE_PROVIDERS;
-      }
-
-      public static int fullUserSelectableMask() {
-         return FULL_USER_SELECTABLE_MASK;
-      }
-
-      public static int maskFromProviders(Iterable<EarthGeneratorSettings.DemProvider> providers) {
-         int mask = 0;
-         if (providers == null) {
-            return mask;
-         }
-
-         for (EarthGeneratorSettings.DemProvider provider : providers) {
-            if (provider != null && provider.userSelectable()) {
-               mask |= provider.selectionBit();
-            }
-         }
-
-         return mask;
-      }
-
-      public static int maskFromProviderIds(List<String> providerIds) {
-         int mask = 0;
-         if (providerIds == null) {
-            return mask;
-         }
-
-         for (String providerId : providerIds) {
-            EarthGeneratorSettings.DemProvider provider = EarthGeneratorSettings.DemProvider.fromId(providerId);
-            if (provider.userSelectable()) {
-               mask |= provider.selectionBit();
-            }
-         }
-
-         return mask;
-      }
-
-      private static int normalizeManualMask(int enabledProviderMask) {
-         int normalized = 0;
-
-         for (EarthGeneratorSettings.DemProvider provider : USER_SELECTABLE_PROVIDERS) {
-            if ((enabledProviderMask & provider.selectionBit()) != 0) {
-               normalized |= provider.selectionBit();
-            }
-         }
-
-         if ((normalized & GLOBAL_COVERAGE_MASK) == 0) {
-            normalized |= EarthGeneratorSettings.DemProvider.TERRARIUM.selectionBit();
-         }
-
-         return normalized;
-      }
-
-      private static int computeFullUserSelectableMask() {
-         int mask = 0;
-
-         for (EarthGeneratorSettings.DemProvider provider : USER_SELECTABLE_PROVIDERS) {
-            mask |= provider.selectionBit();
-         }
-
-         return mask;
-      }
-   }
-
    public static enum DistantHorizonsRenderMode {
       FAST("fast"),
       ULTRA_FAST("ultra_fast"),
@@ -1714,8 +1530,7 @@ public record EarthGeneratorSettings(
       boolean voxyChunkPregenEnabled,
       int voxyChunkPregenMaxRadius,
       int voxyChunkPregenChunksPerTick,
-      EarthGeneratorSettings.DistantHorizonsRenderMode distantHorizonsRenderMode,
-      EarthGeneratorSettings.DemSelection demSelection
+      EarthGeneratorSettings.DistantHorizonsRenderMode distantHorizonsRenderMode
    ) {
       private static EarthGeneratorSettings.SettingsBase fromSettings(EarthGeneratorSettings settings) {
          return new EarthGeneratorSettings.SettingsBase(
@@ -1742,8 +1557,7 @@ public record EarthGeneratorSettings(
             settings.voxyChunkPregenEnabled(),
             settings.voxyChunkPregenMaxRadius(),
             settings.voxyChunkPregenChunksPerTick(),
-            settings.distantHorizonsRenderMode(),
-            settings.demSelection()
+            settings.distantHorizonsRenderMode()
          );
       }
 
@@ -1772,8 +1586,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1802,8 +1615,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1832,8 +1644,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1862,8 +1673,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1892,8 +1702,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1922,8 +1731,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1952,8 +1760,7 @@ public record EarthGeneratorSettings(
             enabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -1982,8 +1789,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             maxRadius,
             this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -2012,8 +1818,7 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             chunksPerTick,
-            this.distantHorizonsRenderMode,
-            this.demSelection
+            this.distantHorizonsRenderMode
          );
       }
 
@@ -2042,40 +1847,10 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenEnabled,
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
-            renderMode,
-            this.demSelection
+            renderMode
          );
       }
 
-      private EarthGeneratorSettings.SettingsBase withDemSelection(EarthGeneratorSettings.DemSelection demSelection) {
-         return new EarthGeneratorSettings.SettingsBase(
-            this.worldScale,
-            this.terrestrialHeightScale,
-            this.oceanicHeightScale,
-            this.heightOffset,
-            this.seaLevel,
-            this.spawnLatitude,
-            this.spawnLongitude,
-            this.minAltitude,
-            this.maxAltitude,
-            this.riverLakeShorelineBlend,
-            this.oceanShorelineBlend,
-            this.shorelineBlendCliffLimit,
-            this.caveGeneration,
-            this.oreDistribution,
-            this.lavaPools,
-            this.distantHorizonsWaterResolver,
-            this.distantHorizonsOsmFeatures,
-            this.realtimeTime,
-            this.realtimeWeather,
-            this.historicalSnow,
-            this.voxyChunkPregenEnabled,
-            this.voxyChunkPregenMaxRadius,
-            this.voxyChunkPregenChunksPerTick,
-            this.distantHorizonsRenderMode,
-            Objects.requireNonNull(demSelection, "demSelection")
-         );
-      }
 
       private EarthGeneratorSettings toSettings() {
          return new EarthGeneratorSettings(
@@ -2125,10 +1900,10 @@ public record EarthGeneratorSettings(
             this.voxyChunkPregenMaxRadius,
             this.voxyChunkPregenChunksPerTick,
             this.distantHorizonsRenderMode,
-            this.demSelection,
             EarthGeneratorSettings.DEFAULT.enableRoads(),
             EarthGeneratorSettings.DEFAULT.enableBuildings(),
-            EarthGeneratorSettings.DEFAULT.enableWater()
+            EarthGeneratorSettings.DEFAULT.enableWater(),
+            EarthGeneratorSettings.DEFAULT.experimentalIncreaseHeight()
          );
       }
    }

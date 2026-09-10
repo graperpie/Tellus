@@ -158,7 +158,7 @@ public final class OsmBuildingFeature {
          return false;
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = worldX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(worldX, worldScale);
          double lat = EarthProjection.blockZToLat(worldZ, worldScale);
          return this.containsLonLat(lon, lat);
       }
@@ -194,7 +194,8 @@ public final class OsmBuildingFeature {
    }
 
    public double minBlockX(double blocksPerDegree) {
-      return this.minLon * blocksPerDegree;
+      double worldScale = EarthProjection.worldScaleFromBlocksPerDegree(blocksPerDegree);
+      return EarthProjection.lonToBlockX(this.minLon, worldScale);
    }
 
    public double minBlockXForScale(double worldScale) {
@@ -202,7 +203,8 @@ public final class OsmBuildingFeature {
    }
 
    public double maxBlockX(double blocksPerDegree) {
-      return this.maxLon * blocksPerDegree;
+      double worldScale = EarthProjection.worldScaleFromBlocksPerDegree(blocksPerDegree);
+      return EarthProjection.lonToBlockX(this.maxLon, worldScale);
    }
 
    public double maxBlockXForScale(double worldScale) {
@@ -222,8 +224,7 @@ public final class OsmBuildingFeature {
    }
 
    public double[] centroidWorld(double worldScale) {
-      double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-      return new double[]{this.centroidLon * blocksPerDegree, EarthProjection.latToBlockZ(this.centroidLat, worldScale)};
+      return new double[]{EarthProjection.lonToBlockX(this.centroidLon, worldScale), EarthProjection.latToBlockZ(this.centroidLat, worldScale)};
    }
 
    public boolean widthLongerThanDepth() {
@@ -319,3 +320,4 @@ public final class OsmBuildingFeature {
       return area * 0.5;
    }
 }
+

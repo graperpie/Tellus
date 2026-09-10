@@ -5,6 +5,9 @@
 	"mixins": [
 		"BiomeFreezeMixin",
 		"BiomePrecipitationMixin",
+		"BlockPosHighYMixin",
+		"ChunkSerializerHighYMixin",
+		"DimensionTypeHighYMixin",
 		"OceanMonumentBuildingMixin",
 		"OceanMonumentStructureMixin"
 	],

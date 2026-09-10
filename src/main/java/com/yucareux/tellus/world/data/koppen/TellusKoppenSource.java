@@ -115,7 +115,7 @@ public final class TellusKoppenSource implements TellusCacheHandle {
          }
 
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
+         double lon = EarthProjection.blockXToLon(blockX, worldScale);
          double lat = EarthProjection.blockZToLat(blockZ, worldScale);
          return !(lat < MIN_LAT) && !(lat > MAX_LAT) && !(lon < MIN_LON) && !(lon > MAX_LON) ? raster.toPixelSample(lon, lat) : null;
       }
@@ -988,3 +988,4 @@ public final class TellusKoppenSource implements TellusCacheHandle {
    private record WarpedCoords(double x, double z) {
    }
 }
+
